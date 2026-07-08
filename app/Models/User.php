@@ -11,9 +11,7 @@ class User extends Authenticatable implements JWTSubject
     use HasFactory;
 
     protected $fillable = ['name', 'email', 'password', 'role', 'profile_image'];
-
     protected $hidden = ['password'];
-
     protected $casts = [
         'profile_image' => 'string',
     ];
