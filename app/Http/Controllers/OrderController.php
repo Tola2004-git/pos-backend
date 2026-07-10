@@ -8,6 +8,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Promotion;
 use App\Models\Table;
+use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class OrderController extends Controller
@@ -198,11 +199,11 @@ class OrderController extends Controller
             Product::find($item['product_id'])?->decrement('qty', $item['quantity']);
         }
 
-        $oldTableId = $order->table_id;
+        $oldTableId = $order->getOriginal('table_id');
         $newTableId = $request->table_id ?? $order->table_id;
         $newStatus = $request->status ?? $order->status;
 
-        if ($newStatus === 'completed') {
+        if ($request->table_id !== null && $request->table_id != $oldTableId) {
             if ($oldTableId) {
                 $oldTable = Table::find($oldTableId);
                 if ($oldTable) {
@@ -210,24 +211,16 @@ class OrderController extends Controller
                     $oldTable->save();
                 }
             }
-        } else {
-            if ($request->table_id !== null) {
-                $table = Table::find($newTableId);
-                if ($table) {
-                    if ($table->status === 'available') {
-                        $table->status = 'reserved';
-                        $table->save();
-                    }
-                }
-            }
 
-            if ($oldTableId && $oldTableId !== $newTableId) {
-                $oldTable = Table::find($oldTableId);
-                if ($oldTable) {
-                    $oldTable->status = 'available';
-                    $oldTable->save();
+            if ($newTableId) {
+                $newTable = Table::find($newTableId);
+                if ($newTable) {
+                    $newTable->status = $newStatus === 'completed' ? 'occupied' : 'reserved';
+                    $newTable->save();
                 }
             }
+        } else {
+            $this->syncTableStatusForOrder($order);
         }
 
         // Ensure items include their related product when returning the updated order
@@ -346,11 +339,7 @@ class OrderController extends Controller
         if ($request->table_id) {
             $table = Table::findOrFail($request->table_id);
 
-            if ($status === 'pending' && $table->status !== 'available') {
-                return response()->json(['message' => 'Selected table is not available.'], 422);
-            }
-
-            if ($status === 'completed' && ! in_array($table->status, ['available', 'reserved'])) {
+            if (! in_array($table->status, ['available', 'occupied', 'reserved'])) {
                 return response()->json(['message' => 'Selected table is not available.'], 422);
             }
         }
@@ -387,22 +376,77 @@ class OrderController extends Controller
             'change_amount'     => $change,
             'status'            => $status,
             'table_id'          => $request->table_id,
+            'table_name'        => $request->table_id ? Table::find($request->table_id)?->name : null,
             'note'              => $request->note ?? null,
         ]);
 
-        if ($table) {
-            $table->status = $order->status === 'pending' ? 'reserved' : 'occupied';
-            $table->save();
-        }
+        $this->syncTableStatusForOrder($order);
 
         foreach ($orderItems as $item) {
             $order->items()->create($item);
             Product::find($item['product_id'])->decrement('qty', $item['quantity']);
         }
 
-        // Ensure items include their related product so frontend can show product image/url
         $order->load(['items.product', 'user', 'paymentMethod']);
         return response()->json(['message' => 'Order created!', 'order' => $order], 201);
+    }
+
+    public function changeTable(Request $request, int $id)
+    {
+        $request->validate([
+            'table_id' => 'required|exists:tables,id',
+        ]);
+
+        return DB::transaction(function () use ($request, $id) {
+            $order = Order::lockForUpdate()->findOrFail($id);
+
+            if (! in_array($order->status, ['pending', 'completed'], true)) {
+                return response()->json(['message' => 'Only pending or completed orders can be moved.'], 422);
+            }
+
+            $newTable = Table::findOrFail($request->table_id);
+            $oldTable = Table::find($order->table_id);
+
+            if ($oldTable && $oldTable->id == $newTable->id) {
+                return response()->json(['message' => 'Already assigned.', 'order' => $order]);
+            }
+
+            // Shared tables (Option 1) let a table hold multiple concurrent active orders
+            // (e.g. one completed order and one pending order side by side). Move all of
+            // them together so a table move never strands an order on the old table.
+            $ordersToMove = $order->table_id
+                ? Order::where('table_id', $order->table_id)
+                    ->whereIn('status', ['pending', 'completed'])
+                    ->lockForUpdate()
+                    ->get()
+                : collect([$order]);
+
+            $currentStatus = $oldTable ? $oldTable->status : 'reserved';
+
+            if ($oldTable) {
+                $oldTable->update(['status' => 'available']);
+            }
+
+            $newTable->update(['status' => $currentStatus]);
+
+            foreach ($ordersToMove as $movingOrder) {
+                $movingOrder->table_id = $newTable->id;
+                $movingOrder->table_name = $newTable->name;
+                $movingOrder->save();
+            }
+
+            $order->refresh();
+            $order->load('table');
+
+            return response()->json([
+                'success' => true,
+                'message' => $ordersToMove->count() > 1
+                    ? "Table changed successfully ({$ordersToMove->count()} orders moved)"
+                    : 'Table changed successfully',
+                'order' => $order,
+                'moved_order_ids' => $ordersToMove->pluck('id'),
+            ]);
+        });
     }
 
     public function cancel(int $id)
@@ -430,5 +474,26 @@ class OrderController extends Controller
             ->latest()
             ->first();
         return response()->json($order);
+    }
+
+    private function syncTableStatusForOrder(Order $order): void
+    {
+        if (! $order->table_id) {
+            return;
+        }
+
+        $table = Table::find($order->table_id);
+        if (! $table) {
+            return;
+        }
+
+        $table->status = match ($order->status) {
+ 
+            'pending' => in_array($table->status, ['occupied', 'reserved'], true) ? $table->status : 'reserved',
+            'completed' => 'occupied',
+            default => 'available',
+        };
+
+        $table->save();
     }
 }

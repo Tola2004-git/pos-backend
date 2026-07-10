@@ -5,10 +5,16 @@ return [
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
     'allowed_methods' => ['*'],
-    'allowed_origins' => ['https://pos-frontend-fawn-eta.vercel.app'],
+    
+    'allowed_origins' => [
+        'https://pos-frontend-fawn-eta.vercel.app', 
+        'http://localhost:5173',
+        'http://127.0.0.1:5173'
+    ],
 
     'allowed_origins_patterns' => [],
-    'allowed_headers' => ['Content-Type', 'X-Requested-With', 'Authorization', 'Accept', 'Origin'],
+
+    'allowed_headers' => ['*'], 
 
     'exposed_headers' => [],
 

@@ -30,7 +30,7 @@ class TableController extends Controller
         return response()->json(['message' => 'Table created!', 'table' => $table]);
     }
 
-    public function update(Request $request, $id)
+    public function update(Request $request, int $id)
     {
         $table = Table::findOrFail($id);
 
@@ -49,11 +49,19 @@ class TableController extends Controller
         return response()->json(['message' => 'Table updated!', 'table' => $table]);
     }
 
-    public function destroy($id)
+    public function clear(Request $request, int $id)
+    {
+        $table = Table::findOrFail($id);
+        $table->update(['status' => 'available']);
+
+        return response()->json(['message' => 'Table cleared!', 'table' => $table]);
+    }
+
+    public function destroy(int $id)
     {
         $table = Table::findOrFail($id);
 
-        if ($table->status === 'occupied') {
+        if (in_array($table->status, ['occupied', 'reserved'])) {
             return response()->json(['message' => 'Cannot delete occupied table!'], 422);
         }
 

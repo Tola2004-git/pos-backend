@@ -51,11 +51,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/orders/{id}', [OrderController::class, 'show']);
     Route::post('/orders', [OrderController::class, 'store']);
     Route::put('/orders/{id}', [OrderController::class, 'update']);
+    Route::post('/orders/{id}/change-table', [OrderController::class, 'changeTable']);
     Route::put('/orders/{id}/cancel', [OrderController::class, 'cancel']);
 
     Route::get('/tables', [TableController::class, 'index']);
     Route::post('/tables', [TableController::class, 'store']);
     Route::put('/tables/{id}', [TableController::class, 'update']);
+    Route::post('/tables/{id}/clear', [TableController::class, 'clear']);
     Route::delete('/tables/{id}', [TableController::class, 'destroy']);
 
     Route::get('/promotions', [PromotionController::class, 'index']);
