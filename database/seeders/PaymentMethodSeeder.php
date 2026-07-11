@@ -13,6 +13,7 @@ class PaymentMethodSeeder extends Seeder
             ['name' => 'Cash'],
             [
                 'icon' => '💵',
+                'description' => 'Cash Payment',
                 'status' => true,
                 'created_at' => now(),
                 'updated_at' => now(),
