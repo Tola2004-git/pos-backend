@@ -11,16 +11,20 @@ class Order extends Model
         'pager_number', 'order_type',
         'subtotal', 'discount', 'tax', 'total',
         'payment_method_id', 'promotion_id', 'amount_paid', 'change_amount',
+        'amount_paid_usd', 'amount_paid_khr', 'exchange_rate_used',
         'status', 'note'
     ];
 
     protected $casts = [
-        'subtotal'      => 'decimal:2',
-        'discount'      => 'decimal:2',
-        'tax'           => 'decimal:2',
-        'total'         => 'decimal:2',
-        'amount_paid'   => 'decimal:2',
-        'change_amount' => 'decimal:2',
+        'subtotal'           => 'decimal:2',
+        'discount'           => 'decimal:2',
+        'tax'                => 'decimal:2',
+        'total'              => 'decimal:2',
+        'amount_paid'        => 'decimal:2',
+        'change_amount'      => 'decimal:2',
+        'amount_paid_usd'    => 'decimal:2',
+        'amount_paid_khr'    => 'decimal:2',
+        'exchange_rate_used' => 'decimal:2',
     ];
 
     public function items()

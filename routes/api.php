@@ -10,6 +10,7 @@ use App\Http\Controllers\PaymentMethodController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\TableController;
 use App\Http\Controllers\PromotionController;
+use App\Http\Controllers\DailyExportController;
 use GuzzleHttp\Psr7\Response;
 
 Route::post('/register', [AuthController::class, 'register']);
@@ -64,4 +65,8 @@ Route::middleware('auth:api')->group(function () {
     Route::post('/promotions', [PromotionController::class, 'store']);
     Route::put('/promotions/{id}', [PromotionController::class, 'update']);
     Route::delete('/promotions/{id}', [PromotionController::class, 'destroy']);
+
+    Route::get('/daily-exports', [DailyExportController::class, 'index']);
+    Route::post('/daily-exports/generate', [DailyExportController::class, 'generate']);
+    Route::get('/daily-exports/{date}/download', [DailyExportController::class, 'download']);
 });
