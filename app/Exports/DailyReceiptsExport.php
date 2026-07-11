@@ -17,7 +17,6 @@ use Maatwebsite\Excel\Events\AfterSheet;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 use PhpOffice\PhpSpreadsheet\Style\Border;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
-use PhpOffice\PhpSpreadsheet\Style\NumberFormat;
 
 class DailyReceiptsExport implements
     FromQuery,
@@ -39,6 +38,7 @@ class DailyReceiptsExport implements
     {
         return Order::query()
             ->whereDate('created_at', $this->date)
+            ->where('status', 'completed')
             ->with(['items', 'paymentMethod'])
             ->orderBy('created_at');
     }

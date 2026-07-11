@@ -34,7 +34,9 @@ class ExportDailyReceipts extends Command
             ? Carbon::parse($this->argument('date'))
             : Carbon::today();
 
-        $ordersQuery = Order::query()->whereDate('created_at', $date);
+        $ordersQuery = Order::query()
+            ->whereDate('created_at', $date)
+            ->where('status', 'completed');
         $ordersCount = $ordersQuery->count();
         $totalAmount = (clone $ordersQuery)->sum('total');
 

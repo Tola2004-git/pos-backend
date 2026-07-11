@@ -8,6 +8,7 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Promotion;
 use App\Models\Table;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
@@ -400,6 +401,17 @@ class OrderController extends Controller
         }
 
         $order->load(['items.product', 'user', 'paymentMethod']);
+
+        if ($order->status === 'completed') {
+            $exportDate = $order->created_at->toDateString();
+
+            // Runs after the JSON response is flushed to the client, so the
+            // Excel build + Google Drive upload never adds latency to checkout.
+            dispatch(function () use ($exportDate) {
+                Artisan::call('app:export-daily-receipts', ['date' => $exportDate]);
+            })->afterResponse();
+        }
+
         return response()->json(['message' => 'Order created!', 'order' => $order], 201);
     }
 
