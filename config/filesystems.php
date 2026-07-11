@@ -65,7 +65,11 @@ return [
             'clientId' => env('GOOGLE_DRIVE_CLIENT_ID'),
             'clientSecret' => env('GOOGLE_DRIVE_CLIENT_SECRET'),
             'refreshToken' => env('GOOGLE_DRIVE_REFRESH_TOKEN'),
-            'folderId' => env('GOOGLE_DRIVE_FOLDER_ID'),
+            // Literal ID of an existing Drive folder to upload into - must be
+            // passed to the adapter as `sharedFolderId`, not as the `$root`
+            // display path, otherwise the adapter treats this ID string as a
+            // folder *name* to find-or-create under "My Drive".
+            'sharedFolderId' => env('GOOGLE_DRIVE_FOLDER_ID'),
         ],
 
     ],

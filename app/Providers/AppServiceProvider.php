@@ -33,8 +33,13 @@ class AppServiceProvider extends ServiceProvider
             $client->setClientSecret($config['clientSecret']);
             $client->refreshToken($config['refreshToken']);
 
+            $options = [];
+            if (! empty($config['sharedFolderId'] ?? null)) {
+                $options['sharedFolderId'] = $config['sharedFolderId'];
+            }
+
             $service = new GoogleServiceDrive($client);
-            $adapter = new GoogleDriveAdapter($service, $config['folderId'] ?? null);
+            $adapter = new GoogleDriveAdapter($service, null, $options);
             $driver = new Filesystem($adapter);
 
             return new FilesystemAdapter($driver, $adapter, $config);
