@@ -11,6 +11,7 @@ use Maatwebsite\Excel\Concerns\WithColumnFormatting;
 use Maatwebsite\Excel\Concerns\WithEvents;
 use Maatwebsite\Excel\Concerns\WithHeadings;
 use Maatwebsite\Excel\Concerns\WithMapping;
+use Maatwebsite\Excel\Concerns\WithPreCalculateFormulas;
 use Maatwebsite\Excel\Concerns\WithStyles;
 use Maatwebsite\Excel\Concerns\WithTitle;
 use Maatwebsite\Excel\Events\AfterSheet;
@@ -26,7 +27,8 @@ class DailyReceiptsExport implements
     WithColumnFormatting,
     WithEvents,
     WithTitle,
-    ShouldAutoSize
+    ShouldAutoSize,
+    WithPreCalculateFormulas
 {
     private const LAST_COLUMN = 'M';
 
