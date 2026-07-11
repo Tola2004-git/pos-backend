@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use App\Models\Table;
 
 class TableController extends Controller
@@ -16,15 +17,15 @@ class TableController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'name'     => 'required|string',
-            'capacity' => 'required|integer|min:1',
+            'name'     => 'required|string|unique:tables,name',
+            'capacity' => 'required|integer|min:1|max:50',
         ]);
 
         $table = Table::create([
             'name'     => $request->name,
             'capacity' => $request->capacity,
             'status'   => 'available',
-            'note'     => $request->note ?? null,
+            'notes'    => $request->note ?? null,
         ]);
 
         return response()->json(['message' => 'Table created!', 'table' => $table]);
@@ -35,15 +36,15 @@ class TableController extends Controller
         $table = Table::findOrFail($id);
 
         $request->validate([
-            'name'     => 'required|string',
-            'capacity' => 'required|integer|min:1',
+            'name'     => ['required', 'string', Rule::unique('tables', 'name')->ignore($id)],
+            'capacity' => 'required|integer|min:1|max:50',
         ]);
 
         $table->update([
             'name'     => $request->name,
             'capacity' => $request->capacity,
             'status'   => $request->status ?? $table->status,
-            'note'     => $request->note ?? null,
+            'notes'    => $request->note ?? null,
         ]);
 
         return response()->json(['message' => 'Table updated!', 'table' => $table]);

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 use App\Models\Product;
 use App\Models\Category;
 
@@ -26,6 +27,17 @@ class Promotion extends Model
         'end_date'     => 'date',
         'status'       => 'boolean',
     ];
+
+    protected $appends = ['is_expired'];
+
+    public function getIsExpiredAttribute(): bool
+    {
+        if (!$this->end_date) {
+            return false;
+        }
+
+        return Carbon::today()->gt($this->end_date);
+    }
 
     public function products()
     {

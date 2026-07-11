@@ -27,7 +27,7 @@ class PromotionController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
-            'name'         => 'required|string|max:255',
+            'name'         => 'required|string|max:255|unique:promotions,name',
             'type'         => 'required|in:percentage,fixed,bogo',
             'value'        => 'required|numeric|min:0',
             'apply_to'     => 'required|in:all,product,category',
@@ -59,7 +59,7 @@ class PromotionController extends Controller
         $promotion = Promotion::findOrFail($id);
 
         $data = $request->validate([
-            'name'         => 'required|string|max:255',
+            'name'         => 'required|string|max:255|unique:promotions,name,' . $promotion->id,
             'type'         => 'required|in:percentage,fixed,bogo',
             'value'        => 'required|numeric|min:0',
             'apply_to'     => 'required|in:all,product,category',

@@ -20,4 +20,9 @@ class PaymentMethod extends Model
     protected $casts = [
         'status' => 'boolean',
     ];
+
+    public function orders()
+    {
+        return $this->hasMany(Order::class);
+    }
 }

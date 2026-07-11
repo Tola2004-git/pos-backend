@@ -488,6 +488,8 @@ class OrderController extends Controller
         }
 
         $order->update(['status' => 'cancelled']);
+        $this->syncTableStatusForOrder($order);
+
         return response()->json(['message' => 'Order cancelled!', 'order' => $order]);
     }
 
