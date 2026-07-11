@@ -25,11 +25,14 @@ class DailyExportController extends Controller
     {
         $log = DailyExportLog::where('export_date', Carbon::parse($date)->toDateString())->first();
 
-        if (!$log || !Storage::disk('google')->exists($log->file_path)) {
+        /** @var \Illuminate\Filesystem\FilesystemAdapter $disk */
+        $disk = Storage::disk('google');
+
+        if (!$log || !$disk->exists($log->file_path)) {
             return response()->json(['message' => 'No export found for this date.'], 404);
         }
 
-        return Storage::disk('google')->download($log->file_path, basename($log->file_path));
+        return $disk->download($log->file_path, basename($log->file_path));
     }
 
     // Manually (re)generate the export for a given date, defaults to today

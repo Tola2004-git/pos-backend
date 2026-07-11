@@ -97,7 +97,12 @@ class DailyReceiptsExport implements
             'F' => '"$"#,##0.00',
             'G' => '"$"#,##0.00',
             'I' => '"$"#,##0.00',
-            'J' => '#,##0" ៛"',
+            // Use the `[$symbol]` currency-format bracket syntax rather than
+            // a quoted literal - Google's XLSX->Sheets preview converter is
+            // stricter than Excel and can fail to parse non-ASCII text
+            // embedded in a quoted numFmt literal, falling back to a raw/
+            // garbled preview even though the underlying file is valid.
+            'J' => '#,##0 [$៛]',
             'K' => '"$"#,##0.00',
         ];
     }
