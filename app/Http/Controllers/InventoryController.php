@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Product;
 use App\Models\StockLog;
+use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class InventoryController extends Controller
@@ -49,32 +50,43 @@ class InventoryController extends Controller
             'quantity'   => 'required|integer|min:1',
         ]);
 
-        $product = Product::findOrFail($request->product_id);
-        $qtyBefore = $product->qty;
-
-        if ($request->action === 'add') {
-            $product->qty += $request->quantity;
-        } else {
-            if ($product->qty < $request->quantity) {
-                return response()->json(['message' => 'Insufficient stock!'], 422);
-            }
-            $product->qty -= $request->quantity;
-        }
-
-        $product->save();
-
-        // Log
         $user = JWTAuth::parseToken()->authenticate();
-        StockLog::create([
-            'product_id' => $product->id,
-            'user_id'    => $user->id,
-            'action'     => $request->action,
-            'quantity'   => $request->quantity,
-            'qty_before' => $qtyBefore,
-            'qty_after'  => $product->qty,
-            'supplier'   => $request->supplier ?? null,
-            'note'       => $request->note ?? null,
-        ]);
+
+        try {
+            $product = DB::transaction(function () use ($request, $user) {
+                // Lock the row for the duration of the transaction so a concurrent
+                // restock/order on the same product can't read a stale qty and
+                // push the stock negative (check-then-act race).
+                $product = Product::where('id', $request->product_id)->lockForUpdate()->firstOrFail();
+                $qtyBefore = $product->qty;
+
+                if ($request->action === 'add') {
+                    $product->qty += $request->quantity;
+                } else {
+                    if ($product->qty < $request->quantity) {
+                        throw new \RuntimeException('Insufficient stock!');
+                    }
+                    $product->qty -= $request->quantity;
+                }
+
+                $product->save();
+
+                StockLog::create([
+                    'product_id' => $product->id,
+                    'user_id'    => $user->id,
+                    'action'     => $request->action,
+                    'quantity'   => $request->quantity,
+                    'qty_before' => $qtyBefore,
+                    'qty_after'  => $product->qty,
+                    'supplier'   => $request->supplier ?? null,
+                    'note'       => $request->note ?? null,
+                ]);
+
+                return $product;
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         return response()->json(['message' => 'Stock updated!', 'product' => $product]);
     }

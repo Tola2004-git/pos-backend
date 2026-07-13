@@ -6,6 +6,8 @@ use App\Http\Controllers\UserController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\InventoryController;
+use App\Http\Controllers\IngredientController;
+use App\Http\Controllers\IngredientInventoryController;
 use App\Http\Controllers\PaymentMethodController;
 use App\Http\Controllers\OrderController;
 use App\Http\Controllers\TableController;
@@ -41,6 +43,13 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/inventory', [InventoryController::class, 'index']);
     Route::post('/inventory/restock', [InventoryController::class, 'restock']);
     Route::get('/inventory/history', [InventoryController::class, 'history']);
+
+    Route::get('/ingredients', [IngredientController::class, 'index']);
+    Route::post('/ingredients', [IngredientController::class, 'store']);
+    Route::put('/ingredients/{id}', [IngredientController::class, 'update']);
+    Route::delete('/ingredients/{id}', [IngredientController::class, 'destroy']);
+    Route::post('/ingredients/restock', [IngredientInventoryController::class, 'restock']);
+    Route::get('/ingredients/history', [IngredientInventoryController::class, 'history']);
 
     Route::get('/payment-methods', [PaymentMethodController::class, 'index']);
     Route::post('/payment-methods', [PaymentMethodController::class, 'store']);

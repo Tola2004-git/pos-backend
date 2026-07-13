@@ -36,8 +36,10 @@ class ProductController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'name'  => 'required|string',
-            'price' => 'required|numeric|min:0',
+            'name'    => 'required|string',
+            'price'   => 'required|numeric|min:0',
+            'sku'     => 'nullable|string|unique:products,sku',
+            'barcode' => 'nullable|string|unique:products,barcode',
         ]);
 
         $product = Product::create([
@@ -59,8 +61,10 @@ class ProductController extends Controller
         $product = Product::findOrFail($id);
 
         $request->validate([
-            'name'  => 'required|string',
-            'price' => 'required|numeric|min:0',
+            'name'    => 'required|string',
+            'price'   => 'required|numeric|min:0',
+            'sku'     => 'nullable|string|unique:products,sku,' . $id,
+            'barcode' => 'nullable|string|unique:products,barcode,' . $id,
         ]);
 
         $product->update([
@@ -78,7 +82,15 @@ class ProductController extends Controller
 
     public function destroy($id)
     {
-        Product::findOrFail($id)->delete();
+        $product = Product::findOrFail($id);
+
+        if ($product->orderItems()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete a product with existing sales history. Please change its status to Inactive instead.',
+            ], 422);
+        }
+
+        $product->delete();
         return response()->json(['message' => 'Product deleted!']);
     }
 }

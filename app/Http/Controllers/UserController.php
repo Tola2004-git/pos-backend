@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\User;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
@@ -31,9 +32,9 @@ class UserController extends Controller
     {
         $request->validate([
             'name'     => 'required|string',
-            'email'    => 'required|email|unique:users',
+            'email'    => 'required|email|unique:users,email',
             'password' => 'required|min:6',
-            'role'     => 'required|in:admin,cashier',
+            'role'     => 'required|in:cashier',
         ]);
 
         $user = User::create([
@@ -50,6 +51,12 @@ class UserController extends Controller
     public function update(Request $request, int $id)
     {
         $user = User::findOrFail($id);
+
+        if ($user->role === 'admin' && Auth::id() != $user->id) {
+            return response()->json([
+                'message' => "You are not allowed to modify another Admin's account.",
+            ], 403);
+        }
 
         $request->validate([
             'name'  => 'required|string',
@@ -75,7 +82,21 @@ class UserController extends Controller
 
     public function destroy(int $id)
     {
-        User::findOrFail($id)->delete();
+        if (Auth::id() == $id) {
+            return response()->json([
+                'message' => 'You cannot delete your own active account.',
+            ], 403);
+        }
+
+        $user = User::findOrFail($id);
+
+        if ($user->role === 'admin') {
+            return response()->json([
+                'message' => "You are not allowed to modify another Admin's account.",
+            ], 403);
+        }
+
+        $user->delete();
         return response()->json(['message' => 'User deleted!']);
     }
 }

@@ -7,6 +7,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Promotion;
+use App\Models\StockLog;
 use App\Models\Table;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -174,36 +175,81 @@ class OrderController extends Controller
             $total = $subtotal - $discount + $tax;
         }
 
-        foreach ($order->items as $existingItem) {
-            $product = Product::find($existingItem->product_id);
-            if ($product) {
-                $product->increment('qty', $existingItem->quantity);
-            }
-        }
-        $order->items()->delete();
+        $user = JWTAuth::parseToken()->authenticate();
 
-        $order->update([
-            'customer_name'     => $request->customer_name ?? $order->customer_name,
-            'customer_phone'    => $request->customer_phone ?? $order->customer_phone,
-            'payment_method_id' => $request->payment_method_id ?? $order->payment_method_id,
-            'amount_paid'       => $request->amount_paid ?? $order->amount_paid,
-            'amount_paid_usd'   => $request->amount_paid_usd ?? $order->amount_paid_usd,
-            'amount_paid_khr'   => $request->amount_paid_khr ?? $order->amount_paid_khr,
-            'exchange_rate_used' => $request->exchange_rate_used ?? $order->exchange_rate_used,
-            'status'            => $request->status ?? $order->status,
-            'table_id'          => $request->table_id ?? $order->table_id,
-            'order_type'        => $request->order_type ?? $order->order_type,
-            'subtotal'          => $subtotal,
-            'discount'          => $discount,
-            'tax'               => $tax,
-            'total'             => $total,
-            'promotion_id'      => $request->promotion_id ?? $order->promotion_id,
-            'note'              => $request->note ?? $order->note,
-        ]);
+        try {
+            DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total) {
+                // Restore stock for the items being replaced first, and lock each
+                // product row for the rest of the transaction so a concurrent
+                // sale/restock on the same product can't interleave and desync qty.
+                foreach ($order->items as $existingItem) {
+                    if (! $existingItem->product_id) {
+                        continue;
+                    }
+                    $product = Product::where('id', $existingItem->product_id)->lockForUpdate()->first();
+                    if (! $product) {
+                        continue;
+                    }
+                    $qtyBefore = $product->qty;
+                    $product->increment('qty', $existingItem->quantity);
 
-        foreach ($orderItems as $item) {
-            $order->items()->create($item);
-            Product::find($item['product_id'])?->decrement('qty', $item['quantity']);
+                    StockLog::create([
+                        'product_id' => $product->id,
+                        'user_id'    => $user->id,
+                        'action'     => 'cancel_restore',
+                        'quantity'   => $existingItem->quantity,
+                        'qty_before' => $qtyBefore,
+                        'qty_after'  => $qtyBefore + $existingItem->quantity,
+                        'note'       => "Order {$order->order_number} edited",
+                    ]);
+                }
+                $order->items()->delete();
+
+                $order->update([
+                    'customer_name'     => $request->customer_name ?? $order->customer_name,
+                    'customer_phone'    => $request->customer_phone ?? $order->customer_phone,
+                    'payment_method_id' => $request->payment_method_id ?? $order->payment_method_id,
+                    'amount_paid'       => $request->amount_paid ?? $order->amount_paid,
+                    'amount_paid_usd'   => $request->amount_paid_usd ?? $order->amount_paid_usd,
+                    'amount_paid_khr'   => $request->amount_paid_khr ?? $order->amount_paid_khr,
+                    'exchange_rate_used' => $request->exchange_rate_used ?? $order->exchange_rate_used,
+                    'status'            => $request->status ?? $order->status,
+                    'table_id'          => $request->table_id ?? $order->table_id,
+                    'order_type'        => $request->order_type ?? $order->order_type,
+                    'subtotal'          => $subtotal,
+                    'discount'          => $discount,
+                    'tax'               => $tax,
+                    'total'             => $total,
+                    'promotion_id'      => $request->promotion_id ?? $order->promotion_id,
+                    'note'              => $request->note ?? $order->note,
+                ]);
+
+                foreach ($orderItems as $item) {
+                    $order->items()->create($item);
+
+                    // Authoritative, lock-protected check: the row is already
+                    // locked above if it existed in the old item set, but a
+                    // product added fresh in this edit needs its own lock here.
+                    $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
+                    if ($product->qty < $item['quantity']) {
+                        throw new \RuntimeException("Insufficient stock for {$product->name}!");
+                    }
+                    $qtyBefore = $product->qty;
+                    $product->decrement('qty', $item['quantity']);
+
+                    StockLog::create([
+                        'product_id' => $product->id,
+                        'user_id'    => $user->id,
+                        'action'     => 'sale',
+                        'quantity'   => $item['quantity'],
+                        'qty_before' => $qtyBefore,
+                        'qty_after'  => $qtyBefore - $item['quantity'],
+                        'note'       => "Order {$order->order_number} edited",
+                    ]);
+                }
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
         }
 
         $oldTableId = $order->getOriginal('table_id');
@@ -369,35 +415,62 @@ class OrderController extends Controller
 
         $orderNumber = 'ORD-' . strtoupper(uniqid());
 
-        $order = Order::create([
-            'order_number'      => $orderNumber,
-            'user_id'           => $user->id,
-            'customer_name'     => $request->customer_name ?? null,
-            'customer_phone'    => $request->customer_phone ?? null,
-            'pager_number'      => $request->pager_number ?? null,
-            'order_type'        => $request->order_type ?? 'takeaway',
-            'subtotal'          => $subtotal,
-            'discount'          => $discount,
-            'tax'               => $tax,
-            'total'             => $total,
-            'payment_method_id' => $request->payment_method_id,
-            'promotion_id'      => $request->promotion_id,
-            'amount_paid'       => $request->amount_paid,
-            'amount_paid_usd'   => $request->amount_paid_usd ?? 0,
-            'amount_paid_khr'   => $request->amount_paid_khr ?? 0,
-            'exchange_rate_used' => $request->exchange_rate_used ?? null,
-            'change_amount'     => $change,
-            'status'            => $status,
-            'table_id'          => $request->table_id,
-            'table_name'        => $request->table_id ? Table::find($request->table_id)?->name : null,
-            'note'              => $request->note ?? null,
-        ]);
+        try {
+            $order = DB::transaction(function () use ($request, $user, $orderItems, $subtotal, $discount, $tax, $total, $change, $status, $orderNumber) {
+                $order = Order::create([
+                    'order_number'      => $orderNumber,
+                    'user_id'           => $user->id,
+                    'customer_name'     => $request->customer_name ?? null,
+                    'customer_phone'    => $request->customer_phone ?? null,
+                    'pager_number'      => $request->pager_number ?? null,
+                    'order_type'        => $request->order_type ?? 'takeaway',
+                    'subtotal'          => $subtotal,
+                    'discount'          => $discount,
+                    'tax'               => $tax,
+                    'total'             => $total,
+                    'payment_method_id' => $request->payment_method_id,
+                    'promotion_id'      => $request->promotion_id,
+                    'amount_paid'       => $request->amount_paid,
+                    'amount_paid_usd'   => $request->amount_paid_usd ?? 0,
+                    'amount_paid_khr'   => $request->amount_paid_khr ?? 0,
+                    'exchange_rate_used' => $request->exchange_rate_used ?? null,
+                    'change_amount'     => $change,
+                    'status'            => $status,
+                    'table_id'          => $request->table_id,
+                    'table_name'        => $request->table_id ? Table::find($request->table_id)?->name : null,
+                    'note'              => $request->note ?? null,
+                ]);
 
-        $this->syncTableStatusForOrder($order);
+                $this->syncTableStatusForOrder($order);
 
-        foreach ($orderItems as $item) {
-            $order->items()->create($item);
-            Product::find($item['product_id'])->decrement('qty', $item['quantity']);
+                foreach ($orderItems as $item) {
+                    $order->items()->create($item);
+
+                    // Authoritative, lock-protected recheck: the earlier qty
+                    // check above is only a fast-path UX guard and isn't safe
+                    // against concurrent orders racing the same product.
+                    $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
+                    if ($product->qty < $item['quantity']) {
+                        throw new \RuntimeException("Insufficient stock for {$product->name}!");
+                    }
+                    $qtyBefore = $product->qty;
+                    $product->decrement('qty', $item['quantity']);
+
+                    StockLog::create([
+                        'product_id' => $product->id,
+                        'user_id'    => $user->id,
+                        'action'     => 'sale',
+                        'quantity'   => $item['quantity'],
+                        'qty_before' => $qtyBefore,
+                        'qty_after'  => $qtyBefore - $item['quantity'],
+                        'note'       => "Order {$order->order_number}",
+                    ]);
+                }
+
+                return $order;
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
         }
 
         $order->load(['items.product', 'user', 'paymentMethod']);
@@ -481,13 +554,34 @@ class OrderController extends Controller
             return response()->json(['message' => 'Order already cancelled!'], 422);
         }
 
-        foreach ($order->items as $item) {
-            if ($item->product_id) {
-                Product::find($item->product_id)?->increment('qty', $item->quantity);
-            }
-        }
+        $user = JWTAuth::parseToken()->authenticate();
 
-        $order->update(['status' => 'cancelled']);
+        DB::transaction(function () use ($order, $user) {
+            foreach ($order->items as $item) {
+                if (! $item->product_id) {
+                    continue;
+                }
+                $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+                if (! $product) {
+                    continue;
+                }
+                $qtyBefore = $product->qty;
+                $product->increment('qty', $item->quantity);
+
+                StockLog::create([
+                    'product_id' => $product->id,
+                    'user_id'    => $user->id,
+                    'action'     => 'cancel_restore',
+                    'quantity'   => $item->quantity,
+                    'qty_before' => $qtyBefore,
+                    'qty_after'  => $qtyBefore + $item->quantity,
+                    'note'       => "Order {$order->order_number} cancelled",
+                ]);
+            }
+
+            $order->update(['status' => 'cancelled']);
+        });
+
         $this->syncTableStatusForOrder($order);
 
         return response()->json(['message' => 'Order cancelled!', 'order' => $order]);
