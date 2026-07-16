@@ -24,7 +24,7 @@ class UserController extends Controller
             $query->where('role', $request->role);
         }
 
-        $users = $query->latest()->paginate(10);
+        $users = $query->latest()->paginate($request->per_page ?? 10);
         return response()->json($users);
     }
 

@@ -3,12 +3,16 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Events\OrderChanged;
+use App\Events\TableChanged;
+use App\Models\CashierShift;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\Promotion;
 use App\Models\StockLog;
 use App\Models\Table;
+use App\Support\RealtimeBroadcaster;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
@@ -18,6 +22,14 @@ class OrderController extends Controller
     public function index(Request $request)
     {
         $query = Order::query()->with(['items', 'user', 'paymentMethod', 'table']);
+
+        // Cashiers only see their own sales - enforced server-side so it
+        // can't be bypassed by a client omitting/spoofing a filter param.
+        // Admins keep the unrestricted view across every cashier.
+        $user = JWTAuth::parseToken()->authenticate();
+        if ($user->role === 'cashier') {
+            $query->where('user_id', $user->id);
+        }
 
         if ($request->search) {
             $query->where(function ($q) use ($request) {
@@ -31,21 +43,90 @@ class OrderController extends Controller
             $query->where('status', $request->status);
         }
 
-        if ($request->date_from) {
-            $query->whereDate('created_at', '>=', $request->date_from);
-        }
+        $this->applyDateOrShiftScope($query, $request, $user, 'created_at');
 
-        if ($request->date_to) {
-            $query->whereDate('created_at', '<=', $request->date_to);
+        // Only meaningful for admins - cashiers are already locked to their own
+        // orders above, so this can't be used to see another cashier's sales.
+        if ($request->cashier_id) {
+            $query->where('user_id', $request->cashier_id);
         }
 
         $orders = $query->latest()->paginate($request->per_page ?? 15);
         return response()->json($orders);
     }
 
+    // Scopes a query to either the cashier's currently open shift
+    // (?current_shift=true, from shift.opened_at to now) or an explicit
+    // date_from/date_to range - the shift takes priority when both are
+    // present and an open shift actually exists, since "current shift"
+    // is a more precise window than whichever date the client defaulted
+    // its date pickers to. Falls back to the date range (or no bound at
+    // all) whenever current_shift isn't requested, isn't a cashier, or
+    // the cashier has no open shift right now.
+    private function applyDateOrShiftScope($query, Request $request, $user, string $column)
+    {
+        if ($request->boolean('current_shift') && $user->role === 'cashier') {
+            $shift = CashierShift::where('user_id', $user->id)->where('status', 'open')->first();
+            if ($shift) {
+                $query->where($column, '>=', $shift->opened_at);
+                return;
+            }
+        }
+
+        if ($request->date_from) {
+            $query->whereDate($column, '>=', $request->date_from);
+        }
+
+        if ($request->date_to) {
+            $query->whereDate($column, '<=', $request->date_to);
+        }
+    }
+
+    // Per-cashier sales totals for a date range (or the current shift) -
+    // admins get every cashier side by side, a cashier gets only their own
+    // row (same self-scoping as index() above, so this can't be used to see
+    // another cashier's totals). Also breaks the total down by how it was
+    // paid, since a cashier's end-of-shift cash count needs the cash portion
+    // isolated from card/QR payments that never touch the drawer.
+    public function salesByCashier(Request $request)
+    {
+        $query = Order::query()->where('orders.status', 'completed');
+
+        $user = JWTAuth::parseToken()->authenticate();
+        if ($user->role === 'cashier') {
+            $query->where('orders.user_id', $user->id);
+        }
+
+        $this->applyDateOrShiftScope($query, $request, $user, 'orders.created_at');
+
+        $summary = $query
+            ->join('users', 'users.id', '=', 'orders.user_id')
+            ->leftJoin('payment_methods', 'payment_methods.id', '=', 'orders.payment_method_id')
+            ->groupBy('orders.user_id', 'users.name')
+            ->selectRaw('
+                orders.user_id,
+                users.name,
+                COUNT(*) as orders_count,
+                SUM(orders.total) as total_sales,
+                SUM(CASE WHEN LOWER(payment_methods.name) LIKE \'%cash%\' THEN orders.amount_paid_usd ELSE 0 END) as cash_usd_total,
+                SUM(CASE WHEN LOWER(payment_methods.name) LIKE \'%cash%\' THEN orders.amount_paid_khr ELSE 0 END) as cash_khr_total,
+                SUM(CASE WHEN payment_methods.name IS NOT NULL AND LOWER(payment_methods.name) NOT LIKE \'%cash%\' THEN orders.total ELSE 0 END) as digital_total
+            ')
+            ->orderByDesc('total_sales')
+            ->get();
+
+        return response()->json($summary);
+    }
+
     public function show(int $id)
     {
         $order = Order::with(['items.product', 'user', 'paymentMethod', 'table'])->findOrFail($id);
+
+        $user = JWTAuth::parseToken()->authenticate();
+        if ($user->role === 'cashier' && $order->user_id !== $user->id) {
+            abort(403, 'You can only view your own orders.');
+        }
+
         return response()->json($order);
     }
 
@@ -84,6 +165,20 @@ class OrderController extends Controller
 
         if ($request->order_type === 'dine-in' && ! $request->table_id) {
             return response()->json(['message' => 'Please select a table for dine-in orders.'], 422);
+        }
+
+        $user = JWTAuth::parseToken()->authenticate();
+
+        // Cashiers may only edit their own orders; admins can edit any order.
+        if ($user->role === 'cashier' && $order->user_id !== $user->id) {
+            abort(403, 'You can only edit your own orders.');
+        }
+
+        if (
+            $user->role === 'cashier'
+            && !CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()
+        ) {
+            return response()->json(['message' => 'Please open your shift before selling.'], 422);
         }
 
         $subtotal = 0;
@@ -174,8 +269,6 @@ class OrderController extends Controller
         } else {
             $total = $subtotal - $discount + $tax;
         }
-
-        $user = JWTAuth::parseToken()->authenticate();
 
         try {
             DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total) {
@@ -278,6 +371,15 @@ class OrderController extends Controller
 
         // Ensure items include their related product when returning the updated order
         $order->load(['items.product', 'user', 'paymentMethod', 'table']);
+
+        RealtimeBroadcaster::send(new OrderChanged($order->id, 'updated'));
+        if ($oldTableId) {
+            RealtimeBroadcaster::send(new TableChanged((int) $oldTableId, 'updated'));
+        }
+        if ($newTableId && $newTableId != $oldTableId) {
+            RealtimeBroadcaster::send(new TableChanged((int) $newTableId, 'updated'));
+        }
+
         return response()->json(['message' => 'Order updated!', 'order' => $order]);
     }
 
@@ -300,6 +402,10 @@ class OrderController extends Controller
         ]);
 
         $user = JWTAuth::parseToken()->authenticate();
+
+        if ($user->role === 'cashier' && !CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()) {
+            return response()->json(['message' => 'Please open your shift before selling.'], 422);
+        }
 
         $subtotal = 0;
         $orderItems = [];
@@ -475,6 +581,11 @@ class OrderController extends Controller
 
         $order->load(['items.product', 'user', 'paymentMethod']);
 
+        RealtimeBroadcaster::send(new OrderChanged($order->id, 'created'));
+        if ($request->table_id) {
+            RealtimeBroadcaster::send(new TableChanged((int) $request->table_id, 'created'));
+        }
+
         if ($order->status === 'completed') {
             $exportDate = $order->created_at->toDateString();
 
@@ -494,8 +605,15 @@ class OrderController extends Controller
             'table_id' => 'required|exists:tables,id',
         ]);
 
-        return DB::transaction(function () use ($request, $id) {
+        $user = JWTAuth::parseToken()->authenticate();
+
+        return DB::transaction(function () use ($request, $id, $user) {
             $order = Order::lockForUpdate()->findOrFail($id);
+
+            // Cashiers may only move their own orders; admins can move any order.
+            if ($user->role === 'cashier' && $order->user_id !== $user->id) {
+                abort(403, 'You can only move your own orders.');
+            }
 
             if (! in_array($order->status, ['pending', 'completed'], true)) {
                 return response()->json(['message' => 'Only pending or completed orders can be moved.'], 422);
@@ -535,6 +653,14 @@ class OrderController extends Controller
             $order->refresh();
             $order->load('table');
 
+            if ($oldTable) {
+                RealtimeBroadcaster::send(new TableChanged($oldTable->id, 'moved'));
+            }
+            RealtimeBroadcaster::send(new TableChanged($newTable->id, 'moved'));
+            foreach ($ordersToMove as $movingOrder) {
+                RealtimeBroadcaster::send(new OrderChanged($movingOrder->id, 'moved'));
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => $ordersToMove->count() > 1
@@ -555,6 +681,11 @@ class OrderController extends Controller
         }
 
         $user = JWTAuth::parseToken()->authenticate();
+
+        // Cashiers may only cancel their own sales; admins can cancel any order.
+        if ($user->role === 'cashier' && $order->user_id !== $user->id) {
+            abort(403, 'You can only cancel your own orders.');
+        }
 
         DB::transaction(function () use ($order, $user) {
             foreach ($order->items as $item) {
@@ -584,6 +715,11 @@ class OrderController extends Controller
 
         $this->syncTableStatusForOrder($order);
 
+        RealtimeBroadcaster::send(new OrderChanged($order->id, 'cancelled'));
+        if ($order->table_id) {
+            RealtimeBroadcaster::send(new TableChanged((int) $order->table_id, 'cancelled'));
+        }
+
         return response()->json(['message' => 'Order cancelled!', 'order' => $order]);
     }
 
@@ -593,7 +729,11 @@ class OrderController extends Controller
             ->where('status', 'completed')
             ->latest()
             ->first();
-        return response()->json($order);
+
+        // See CashierShiftController::current() - response()->json(null)
+        // silently becomes "{}", not "null", so wrap it to keep the
+        // falsy-check on the frontend meaningful.
+        return response()->json(['order' => $order]);
     }
 
     private function syncTableStatusForOrder(Order $order): void
