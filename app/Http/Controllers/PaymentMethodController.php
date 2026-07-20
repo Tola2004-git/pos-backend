@@ -19,6 +19,7 @@ class PaymentMethodController extends Controller
 
         $method = PaymentMethod::create([
             'name'           => $data['name'],
+            'is_cash'        => $data['is_cash'] ?? false,
             'icon'           => $data['icon'] ?? '💳',
             'logo'           => $data['logo'] ?? null,
             'description'    => $data['description'] ?? null,
@@ -38,6 +39,7 @@ class PaymentMethodController extends Controller
 
         $method->update([
             'name'           => $data['name'],
+            'is_cash'        => $data['is_cash'] ?? $method->is_cash,
             'icon'           => $data['icon'] ?? $method->icon,
             'logo'           => $data['logo'] ?? $method->logo,
             'description'    => $data['description'] ?? null,

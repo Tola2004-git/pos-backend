@@ -29,7 +29,7 @@ class CashierShiftController extends Controller
 
     public function show(int $id)
     {
-        $shift = CashierShift::with(['user', 'reviewer'])->findOrFail($id);
+        $shift = CashierShift::with(['user', 'reviewer', 'cashMovements'])->findOrFail($id);
 
         $user = JWTAuth::parseToken()->authenticate();
         if ($user->role === 'cashier' && $shift->user_id !== $user->id) {
@@ -101,19 +101,29 @@ class CashierShiftController extends Controller
         $closedAt = now();
 
         // Cash sales rung up by this cashier during the shift window -
-        // matched by payment method name since PaymentMethod has no
-        // dedicated "type" column (see usePOS.js's own cash-detection logic).
+        // matched by the payment method's is_cash flag, not its name, so
+        // renaming/relabeling a payment method can't silently drop it out
+        // of the cash-drawer reconciliation.
         $cashTotals = Order::where('user_id', $user->id)
             ->where('status', 'completed')
             ->whereBetween('created_at', [$shift->opened_at, $closedAt])
             ->whereHas('paymentMethod', function ($q) {
-                $q->whereRaw('LOWER(name) = ?', ['cash']);
+                $q->where('is_cash', true);
             })
             ->selectRaw('COALESCE(SUM(amount_paid_usd), 0) as total_usd, COALESCE(SUM(amount_paid_khr), 0) as total_khr')
             ->first();
 
-        $expectedUsd = (float) $shift->opening_cash_usd + (float) $cashTotals->total_usd;
-        $expectedKhr = (float) $shift->opening_cash_khr + (float) $cashTotals->total_khr;
+        $movementTotals = $shift->cashMovements()
+            ->selectRaw("
+                COALESCE(SUM(CASE WHEN type = 'cash_in' THEN amount_usd ELSE 0 END), 0)
+                    - COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount_usd ELSE 0 END), 0) as net_usd,
+                COALESCE(SUM(CASE WHEN type = 'cash_in' THEN amount_khr ELSE 0 END), 0)
+                    - COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount_khr ELSE 0 END), 0) as net_khr
+            ")
+            ->first();
+
+        $expectedUsd = (float) $shift->opening_cash_usd + (float) $cashTotals->total_usd + (float) $movementTotals->net_usd;
+        $expectedKhr = (float) $shift->opening_cash_khr + (float) $cashTotals->total_khr + (float) $movementTotals->net_khr;
 
         $shift->update([
             'closed_at'         => $closedAt,
@@ -128,6 +138,45 @@ class CashierShiftController extends Controller
         ]);
 
         return response()->json(['shift' => $shift->fresh()]);
+    }
+
+    // Mid-shift cash drops / safe drops / petty-cash disbursements - recorded
+    // as a structured ledger instead of just the free-text note on close(),
+    // so shift-close reconciliation can account for cash that left/entered
+    // the drawer without a sale.
+    public function addCashMovement(Request $request, int $id)
+    {
+        $request->validate([
+            'type'        => 'required|in:cash_in,cash_out',
+            'amount_usd'  => 'nullable|numeric|min:0|max:100000',
+            'amount_khr'  => 'nullable|numeric|min:0|max:500000000',
+            'reason'      => 'required|string|max:255',
+        ]);
+
+        if ((float) ($request->amount_usd ?? 0) <= 0 && (float) ($request->amount_khr ?? 0) <= 0) {
+            return response()->json(['message' => 'Enter an amount in USD or KHR.'], 422);
+        }
+
+        $shift = CashierShift::findOrFail($id);
+        $user = JWTAuth::parseToken()->authenticate();
+
+        if ($shift->user_id !== $user->id) {
+            abort(403, 'You can only record cash movements on your own shift.');
+        }
+
+        if ($shift->status !== 'open') {
+            return response()->json(['message' => 'This shift is already closed.'], 422);
+        }
+
+        $movement = $shift->cashMovements()->create([
+            'user_id'    => $user->id,
+            'type'       => $request->type,
+            'amount_usd' => $request->amount_usd ?? 0,
+            'amount_khr' => $request->amount_khr ?? 0,
+            'reason'     => $request->reason,
+        ]);
+
+        return response()->json(['movement' => $movement], 201);
     }
 
     public function review(Request $request, int $id)

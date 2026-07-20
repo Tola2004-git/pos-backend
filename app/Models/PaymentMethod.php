@@ -8,6 +8,7 @@ class PaymentMethod extends Model
 {
     protected $fillable = [
         'name',
+        'is_cash',
         'icon',
         'description',
         'logo',
@@ -18,7 +19,8 @@ class PaymentMethod extends Model
     ];
 
     protected $casts = [
-        'status' => 'boolean',
+        'status'  => 'boolean',
+        'is_cash' => 'boolean',
     ];
 
     public function orders()

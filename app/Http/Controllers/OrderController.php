@@ -19,9 +19,16 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class OrderController extends Controller
 {
+    // Sanity ceilings for cash tendered - high enough to cover any plausible
+    // bill handed to a cashier, low enough to reject a typo'd/forged amount
+    // (e.g. "999999999") that would otherwise pollute change_amount and the
+    // shift's cash-drawer totals.
+    private const MAX_AMOUNT_PAID_USD = 100000;
+    private const MAX_AMOUNT_PAID_KHR = 500000000;
+
     public function index(Request $request)
     {
-        $query = Order::query()->with(['items', 'user', 'paymentMethod', 'table']);
+        $query = Order::query()->with(['items', 'user', 'paymentMethod', 'table', 'refundedBy']);
 
         // Cashiers only see their own sales - enforced server-side so it
         // can't be bypassed by a client omitting/spoofing a filter param.
@@ -108,9 +115,9 @@ class OrderController extends Controller
                 users.name,
                 COUNT(*) as orders_count,
                 SUM(orders.total) as total_sales,
-                SUM(CASE WHEN LOWER(payment_methods.name) LIKE \'%cash%\' THEN orders.amount_paid_usd ELSE 0 END) as cash_usd_total,
-                SUM(CASE WHEN LOWER(payment_methods.name) LIKE \'%cash%\' THEN orders.amount_paid_khr ELSE 0 END) as cash_khr_total,
-                SUM(CASE WHEN payment_methods.name IS NOT NULL AND LOWER(payment_methods.name) NOT LIKE \'%cash%\' THEN orders.total ELSE 0 END) as digital_total
+                SUM(CASE WHEN payment_methods.is_cash = 1 THEN orders.amount_paid_usd ELSE 0 END) as cash_usd_total,
+                SUM(CASE WHEN payment_methods.is_cash = 1 THEN orders.amount_paid_khr ELSE 0 END) as cash_khr_total,
+                SUM(CASE WHEN payment_methods.name IS NOT NULL AND payment_methods.is_cash = 0 THEN orders.total ELSE 0 END) as digital_total
             ')
             ->orderByDesc('total_sales')
             ->get();
@@ -118,9 +125,33 @@ class OrderController extends Controller
         return response()->json($summary);
     }
 
+    // Daily sales totals for a date range - powers the dashboard's sales
+    // trend chart with a single query instead of one request per day. Same
+    // role-scoping as salesByCashier: a cashier only sees their own daily
+    // totals, never the whole store's.
+    public function salesTrend(Request $request)
+    {
+        $query = Order::query()->where('orders.status', 'completed');
+
+        $user = JWTAuth::parseToken()->authenticate();
+        if ($user->role === 'cashier') {
+            $query->where('orders.user_id', $user->id);
+        }
+
+        $this->applyDateOrShiftScope($query, $request, $user, 'orders.created_at');
+
+        $summary = $query
+            ->selectRaw('DATE(orders.created_at) as date, COUNT(*) as orders_count, SUM(orders.total) as total_sales')
+            ->groupBy('date')
+            ->orderBy('date')
+            ->get();
+
+        return response()->json($summary);
+    }
+
     public function show(int $id)
     {
-        $order = Order::with(['items.product', 'user', 'paymentMethod', 'table'])->findOrFail($id);
+        $order = Order::with(['items.product', 'user', 'paymentMethod', 'table', 'refundedBy'])->findOrFail($id);
 
         $user = JWTAuth::parseToken()->authenticate();
         if ($user->role === 'cashier' && $order->user_id !== $user->id) {
@@ -143,11 +174,14 @@ class OrderController extends Controller
             'items.*.product_id'  => 'required|exists:products,id',
             'items.*.quantity'    => 'required|integer|min:1',
             'payment_method_id'   => 'nullable|exists:payment_methods,id',
-            'amount_paid'         => 'nullable|numeric|min:0',
-            'amount_paid_usd'     => 'nullable|numeric|min:0',
-            'amount_paid_khr'     => 'nullable|numeric|min:0',
+            'amount_paid'         => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_USD,
+            'amount_paid_usd'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_USD,
+            'amount_paid_khr'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_KHR,
             'exchange_rate_used'  => 'nullable|numeric|min:0',
-            'status'              => 'nullable|in:pending,completed,cancelled,refunded',
+            // 'refunded' is intentionally excluded - refunds go through the
+            // dedicated refund() endpoint so stock restore, cash-drawer impact,
+            // and a reason are always recorded together.
+            'status'              => 'nullable|in:pending,completed,cancelled',
             'table_id'            => 'nullable|exists:tables,id',
             'order_type'          => 'nullable|in:takeaway,self-seating,dine-in',
             'customer_name'       => 'nullable|string|max:255',
@@ -206,6 +240,7 @@ class OrderController extends Controller
         if ($subtotalFromPayload !== null) {
             $subtotal = (float) $subtotalFromPayload;
         }
+        $subtotal = round($subtotal, 2);
 
         $activePromotions = Promotion::with(['products', 'categories'])
             ->where('status', true)
@@ -263,15 +298,26 @@ class OrderController extends Controller
         }
 
         $discount = round((float) $discount, 2);
+        $tax = round($tax, 2);
 
         if ($totalFromPayload !== null) {
             $total = (float) $totalFromPayload;
         } else {
             $total = $subtotal - $discount + $tax;
         }
+        $total = max(0, round($total, 2));
+
+        $newStatus = $request->status ?? $order->status;
+        $amountPaid = $request->amount_paid !== null ? (float) $request->amount_paid : (float) $order->amount_paid;
+
+        if ($newStatus === 'completed' && $amountPaid < $total) {
+            return response()->json(['message' => 'Amount paid is less than total!'], 422);
+        }
+
+        $change = $newStatus === 'completed' ? round($amountPaid - $total, 2) : 0;
 
         try {
-            DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total) {
+            DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total, $change) {
                 // Restore stock for the items being replaced first, and lock each
                 // product row for the rest of the transaction so a concurrent
                 // sale/restock on the same product can't interleave and desync qty.
@@ -313,6 +359,7 @@ class OrderController extends Controller
                     'discount'          => $discount,
                     'tax'               => $tax,
                     'total'             => $total,
+                    'change_amount'     => $change,
                     'promotion_id'      => $request->promotion_id ?? $order->promotion_id,
                     'note'              => $request->note ?? $order->note,
                 ]);
@@ -390,21 +437,37 @@ class OrderController extends Controller
             'items.*.product_id'  => 'required|exists:products,id',
             'items.*.quantity'    => 'required|integer|min:1',
             'payment_method_id'   => 'nullable|exists:payment_methods,id',
-            'amount_paid'         => 'required|numeric|min:0',
-            'amount_paid_usd'     => 'nullable|numeric|min:0',
-            'amount_paid_khr'     => 'nullable|numeric|min:0',
+            'amount_paid'         => 'required|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_USD,
+            'amount_paid_usd'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_USD,
+            'amount_paid_khr'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_KHR,
             'exchange_rate_used'  => 'nullable|numeric|min:0',
             'promotion_id'        => 'nullable|exists:promotions,id',
-            'status'              => 'nullable|in:pending,completed,cancelled,refunded',
+            // 'refunded' is intentionally excluded - an order is never created
+            // pre-refunded, only transitioned there via the refund() endpoint.
+            'status'              => 'nullable|in:pending,completed,cancelled',
             'table_id'            => 'nullable|exists:tables,id',
             'pager_number'        => 'nullable|string|max:255',
             'order_type'          => 'nullable|in:takeaway,self-seating,dine-in',
+            'idempotency_key'     => 'nullable|string|max:100',
         ]);
 
         $user = JWTAuth::parseToken()->authenticate();
 
         if ($user->role === 'cashier' && !CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()) {
             return response()->json(['message' => 'Please open your shift before selling.'], 422);
+        }
+
+        // A retried checkout (network error, duplicate tab, a client bug
+        // bypassing the submit-button guard) carries the same key - return
+        // the order that was already created instead of charging twice.
+        if ($request->idempotency_key) {
+            $existing = Order::where('user_id', $user->id)
+                ->where('idempotency_key', $request->idempotency_key)
+                ->first();
+            if ($existing) {
+                $existing->load(['items.product', 'user', 'paymentMethod']);
+                return response()->json(['message' => 'Order already created!', 'order' => $existing], 200);
+            }
         }
 
         $subtotal = 0;
@@ -489,8 +552,10 @@ class OrderController extends Controller
             }
         }
 
-        $tax   = $request->tax ?? 0;
-        $total = $subtotal - $discount + $tax;
+        $subtotal = round($subtotal, 2);
+        $discount = round((float) $discount, 2);
+        $tax   = round((float) ($request->tax ?? 0), 2);
+        $total = max(0, round($subtotal - $discount + $tax, 2));
         $status = $request->status ?? 'completed';
 
         if ($request->order_type === 'dine-in' && ! $request->table_id) {
@@ -514,69 +579,84 @@ class OrderController extends Controller
             return response()->json(['message' => 'Amount paid must be at least 0 for pending orders!'], 422);
         }
 
-        $change = $request->amount_paid - $total;
+        $change = round($request->amount_paid - $total, 2);
         if ($status !== 'completed') {
             $change = 0;
         }
 
-        $orderNumber = 'ORD-' . strtoupper(uniqid());
+        $idempotencyKey = $request->idempotency_key ?: null;
 
-        try {
-            $order = DB::transaction(function () use ($request, $user, $orderItems, $subtotal, $discount, $tax, $total, $change, $status, $orderNumber) {
-                $order = Order::create([
-                    'order_number'      => $orderNumber,
-                    'user_id'           => $user->id,
-                    'customer_name'     => $request->customer_name ?? null,
-                    'customer_phone'    => $request->customer_phone ?? null,
-                    'pager_number'      => $request->pager_number ?? null,
-                    'order_type'        => $request->order_type ?? 'takeaway',
-                    'subtotal'          => $subtotal,
-                    'discount'          => $discount,
-                    'tax'               => $tax,
-                    'total'             => $total,
-                    'payment_method_id' => $request->payment_method_id,
-                    'promotion_id'      => $request->promotion_id,
-                    'amount_paid'       => $request->amount_paid,
-                    'amount_paid_usd'   => $request->amount_paid_usd ?? 0,
-                    'amount_paid_khr'   => $request->amount_paid_khr ?? 0,
-                    'exchange_rate_used' => $request->exchange_rate_used ?? null,
-                    'change_amount'     => $change,
-                    'status'            => $status,
-                    'table_id'          => $request->table_id,
-                    'table_name'        => $request->table_id ? Table::find($request->table_id)?->name : null,
-                    'note'              => $request->note ?? null,
-                ]);
-
-                $this->syncTableStatusForOrder($order);
-
-                foreach ($orderItems as $item) {
-                    $order->items()->create($item);
-
-                    // Authoritative, lock-protected recheck: the earlier qty
-                    // check above is only a fast-path UX guard and isn't safe
-                    // against concurrent orders racing the same product.
-                    $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
-                    if ($product->qty < $item['quantity']) {
-                        throw new \RuntimeException("Insufficient stock for {$product->name}!");
-                    }
-                    $qtyBefore = $product->qty;
-                    $product->decrement('qty', $item['quantity']);
-
-                    StockLog::create([
-                        'product_id' => $product->id,
-                        'user_id'    => $user->id,
-                        'action'     => 'sale',
-                        'quantity'   => $item['quantity'],
-                        'qty_before' => $qtyBefore,
-                        'qty_after'  => $qtyBefore - $item['quantity'],
-                        'note'       => "Order {$order->order_number}",
+        // uniqid() is time-based and unique() alone would surface a collision
+        // as a raw 500 - regenerate and retry a handful of times instead.
+        $order = null;
+        for ($attempts = 0; $attempts < 5; $attempts++) {
+            $orderNumber = 'ORD-' . strtoupper(uniqid('', true));
+            try {
+                $order = DB::transaction(function () use ($request, $user, $orderItems, $subtotal, $discount, $tax, $total, $change, $status, $orderNumber, $idempotencyKey) {
+                    $order = Order::create([
+                        'order_number'      => $orderNumber,
+                        'idempotency_key'   => $idempotencyKey,
+                        'user_id'           => $user->id,
+                        'customer_name'     => $request->customer_name ?? null,
+                        'customer_phone'    => $request->customer_phone ?? null,
+                        'pager_number'      => $request->pager_number ?? null,
+                        'order_type'        => $request->order_type ?? 'takeaway',
+                        'subtotal'          => $subtotal,
+                        'discount'          => $discount,
+                        'tax'               => $tax,
+                        'total'             => $total,
+                        'payment_method_id' => $request->payment_method_id,
+                        'promotion_id'      => $request->promotion_id,
+                        'amount_paid'       => $request->amount_paid,
+                        'amount_paid_usd'   => $request->amount_paid_usd ?? 0,
+                        'amount_paid_khr'   => $request->amount_paid_khr ?? 0,
+                        'exchange_rate_used' => $request->exchange_rate_used ?? null,
+                        'change_amount'     => $change,
+                        'status'            => $status,
+                        'table_id'          => $request->table_id,
+                        'table_name'        => $request->table_id ? Table::find($request->table_id)?->name : null,
+                        'note'              => $request->note ?? null,
                     ]);
-                }
 
-                return $order;
-            });
-        } catch (\RuntimeException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+                    $this->syncTableStatusForOrder($order);
+
+                    foreach ($orderItems as $item) {
+                        $order->items()->create($item);
+
+                        // Authoritative, lock-protected recheck: the earlier qty
+                        // check above is only a fast-path UX guard and isn't safe
+                        // against concurrent orders racing the same product.
+                        $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
+                        if ($product->qty < $item['quantity']) {
+                            throw new \RuntimeException("Insufficient stock for {$product->name}!");
+                        }
+                        $qtyBefore = $product->qty;
+                        $product->decrement('qty', $item['quantity']);
+
+                        StockLog::create([
+                            'product_id' => $product->id,
+                            'user_id'    => $user->id,
+                            'action'     => 'sale',
+                            'quantity'   => $item['quantity'],
+                            'qty_before' => $qtyBefore,
+                            'qty_after'  => $qtyBefore - $item['quantity'],
+                            'note'       => "Order {$order->order_number}",
+                        ]);
+                    }
+
+                    return $order;
+                });
+                break;
+            } catch (\RuntimeException $e) {
+                return response()->json(['message' => $e->getMessage()], 422);
+            } catch (\Illuminate\Database\QueryException $e) {
+                $isDuplicateOrderNumber = $e->getCode() === '23000'
+                    && str_contains($e->getMessage(), 'order_number');
+                if (! $isDuplicateOrderNumber || $attempts >= 4) {
+                    throw $e;
+                }
+                // order_number collided - loop around and try a fresh one.
+            }
         }
 
         $order->load(['items.product', 'user', 'paymentMethod']);
@@ -721,6 +801,82 @@ class OrderController extends Controller
         }
 
         return response()->json(['message' => 'Order cancelled!', 'order' => $order]);
+    }
+
+    // Admin-only, deliberately separate from update(): a refund always
+    // restores stock, requires a reason, and records who approved it - a
+    // cashier flipping their own completed order's status field can't
+    // silently skip any of that.
+    public function refund(Request $request, int $id)
+    {
+        $request->validate([
+            'reason' => 'required|string|max:500',
+        ]);
+
+        $order = Order::with('items')->findOrFail($id);
+
+        if ($order->status !== 'completed') {
+            return response()->json(['message' => 'Only completed orders can be refunded.'], 422);
+        }
+
+        $user = JWTAuth::parseToken()->authenticate();
+
+        DB::transaction(function () use ($order, $user, $request) {
+            foreach ($order->items as $item) {
+                if (! $item->product_id) {
+                    continue;
+                }
+                $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
+                if (! $product) {
+                    continue;
+                }
+                $qtyBefore = $product->qty;
+                $product->increment('qty', $item->quantity);
+
+                StockLog::create([
+                    'product_id' => $product->id,
+                    'user_id'    => $user->id,
+                    'action'     => 'refund_restore',
+                    'quantity'   => $item->quantity,
+                    'qty_before' => $qtyBefore,
+                    'qty_after'  => $qtyBefore + $item->quantity,
+                    'note'       => "Order {$order->order_number} refunded: {$request->reason}",
+                ]);
+            }
+
+            $order->update([
+                'status'        => 'refunded',
+                'refunded_by'   => $user->id,
+                'refunded_at'   => now(),
+                'refund_reason' => $request->reason,
+            ]);
+        });
+
+        $this->syncTableStatusForOrder($order);
+
+        RealtimeBroadcaster::send(new OrderChanged($order->id, 'refunded'));
+        if ($order->table_id) {
+            RealtimeBroadcaster::send(new TableChanged((int) $order->table_id, 'refunded'));
+        }
+
+        return response()->json(['message' => 'Order refunded!', 'order' => $order->fresh(['items.product', 'user', 'paymentMethod', 'refundedBy'])]);
+    }
+
+    // Increments and returns the reprint counter for loss-prevention visibility
+    // (the receipt itself is rendered client-side; this just tracks how many
+    // times it's been reprinted and by whom it was last requested).
+    public function recordReceiptPrint(int $id)
+    {
+        $order = Order::findOrFail($id);
+
+        $user = JWTAuth::parseToken()->authenticate();
+        if ($user->role === 'cashier' && $order->user_id !== $user->id) {
+            abort(403, 'You can only print receipts for your own orders.');
+        }
+
+        $order->increment('receipt_reprint_count');
+
+        return response()->json(['receipt_reprint_count' => $order->receipt_reprint_count]);
     }
 
     public function latest()

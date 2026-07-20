@@ -17,8 +17,7 @@ use App\Http\Controllers\SettingController;
 use App\Http\Controllers\CashierShiftController;
 use GuzzleHttp\Psr7\Response;
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');
 
 Route::middleware('auth:api')->group(function () {
     // Available to any authenticated user, regardless of role.
@@ -73,6 +72,7 @@ Route::middleware('auth:api')->group(function () {
         Route::put('/settings/low-stock-threshold', [SettingController::class, 'updateLowStockThreshold']);
 
         Route::put('/cashier-shifts/{id}/review', [CashierShiftController::class, 'review']);
+        Route::put('/orders/{id}/refund', [OrderController::class, 'refund']);
     });
 
     // Shared: admin + cashier. Orders/tables (POS operation) and read-only
@@ -87,11 +87,13 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/orders', [OrderController::class, 'index']);
         Route::get('/orders/latest', [OrderController::class, 'latest']);
         Route::get('/orders/sales-by-cashier', [OrderController::class, 'salesByCashier']);
+        Route::get('/orders/sales-trend', [OrderController::class, 'salesTrend']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
         Route::post('/orders', [OrderController::class, 'store']);
         Route::put('/orders/{id}', [OrderController::class, 'update']);
         Route::post('/orders/{id}/change-table', [OrderController::class, 'changeTable']);
         Route::put('/orders/{id}/cancel', [OrderController::class, 'cancel']);
+        Route::post('/orders/{id}/record-receipt-print', [OrderController::class, 'recordReceiptPrint']);
 
         Route::get('/tables', [TableController::class, 'index']);
         Route::post('/tables/{id}/clear', [TableController::class, 'clear']);
@@ -102,5 +104,6 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/cashier-shifts/{id}', [CashierShiftController::class, 'show']);
         Route::post('/cashier-shifts/open', [CashierShiftController::class, 'open']);
         Route::put('/cashier-shifts/{id}/close', [CashierShiftController::class, 'close']);
+        Route::post('/cashier-shifts/{id}/cash-movements', [CashierShiftController::class, 'addCashMovement']);
     });
 });

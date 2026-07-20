@@ -39,4 +39,9 @@ class CashierShift extends Model
     {
         return $this->belongsTo(User::class, 'reviewed_by');
     }
+
+    public function cashMovements()
+    {
+        return $this->hasMany(CashierCashMovement::class);
+    }
 }

@@ -12,6 +12,7 @@ class PaymentMethodSeeder extends Seeder
         DB::table('payment_methods')->updateOrInsert(
             ['name' => 'Cash'],
             [
+                'is_cash' => true,
                 'icon' => '💵',
                 'description' => 'Cash Payment',
                 'status' => true,

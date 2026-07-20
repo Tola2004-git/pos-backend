@@ -7,12 +7,13 @@ use Illuminate\Database\Eloquent\Model;
 class Order extends Model
 {
     protected $fillable = [
-        'order_number', 'user_id', 'table_id', 'table_name', 'customer_name', 'customer_phone',
+        'order_number', 'idempotency_key', 'user_id', 'table_id', 'table_name', 'customer_name', 'customer_phone',
         'pager_number', 'order_type',
         'subtotal', 'discount', 'tax', 'total',
         'payment_method_id', 'promotion_id', 'amount_paid', 'change_amount',
         'amount_paid_usd', 'amount_paid_khr', 'exchange_rate_used',
-        'status', 'note'
+        'status', 'note',
+        'refunded_by', 'refunded_at', 'refund_reason', 'receipt_reprint_count',
     ];
 
     protected $casts = [
@@ -25,6 +26,7 @@ class Order extends Model
         'amount_paid_usd'    => 'decimal:2',
         'amount_paid_khr'    => 'decimal:2',
         'exchange_rate_used' => 'decimal:2',
+        'refunded_at'        => 'datetime',
     ];
 
     public function items()
@@ -50,5 +52,10 @@ class Order extends Model
     public function table()
     {
         return $this->belongsTo(Table::class);
+    }
+
+    public function refundedBy()
+    {
+        return $this->belongsTo(User::class, 'refunded_by');
     }
 }

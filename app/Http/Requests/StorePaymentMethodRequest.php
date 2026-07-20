@@ -23,6 +23,7 @@ class StorePaymentMethodRequest extends FormRequest
     {
         return [
             'name'           => 'required|string|max:100|unique:payment_methods,name',
+            'is_cash'        => 'nullable|boolean',
             'icon'           => 'nullable|string|max:2048',
             'logo'           => 'nullable|string|max:2048',
             'description'    => 'nullable|string|max:255',
