@@ -94,7 +94,12 @@ class InventoryController extends Controller
     // Stock History
     public function history(Request $request)
     {
-        $query = StockLog::with(['product', 'user']);
+        // The history table only ever displays the product's name and the
+        // user's name - eager-loading full rows here would drag every
+        // product's base64 `image` column along for each log row (products
+        // can carry several hundred KB of inline image data each), turning
+        // a lightweight paginated list into a multi-megabyte response.
+        $query = StockLog::with(['product:id,name', 'user:id,name']);
 
         if ($request->product_id) {
             $query->where('product_id', $request->product_id);

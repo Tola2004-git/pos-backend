@@ -30,4 +30,11 @@ class Ingredient extends Model
     {
         return $this->hasMany(IngredientStockLog::class);
     }
+
+    public function products()
+    {
+        return $this->belongsToMany(Product::class, 'product_ingredients')
+            ->withPivot('quantity')
+            ->withTimestamps();
+    }
 }

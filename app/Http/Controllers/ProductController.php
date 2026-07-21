@@ -9,7 +9,23 @@ class ProductController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Product::with('category');
+        // `fields` is an opt-in lightweight mode for callers (e.g. the
+        // global low-stock poller) that only need a couple of columns -
+        // skipping the default `image` column matters because it can carry
+        // several hundred KB of inline base64 data per product, and this
+        // endpoint is polled every 30s from every page in the app.
+        if ($request->fields) {
+            $columns = collect(explode(',', $request->fields))
+                ->map(fn ($c) => trim($c))
+                ->filter()
+                ->push('id')
+                ->unique()
+                ->values()
+                ->all();
+            $query = Product::query()->select($columns);
+        } else {
+            $query = Product::with('category');
+        }
 
         if ($request->search) {
             $query->where(function ($q) use ($request) {
@@ -92,5 +108,37 @@ class ProductController extends Controller
 
         $product->delete();
         return response()->json(['message' => 'Product deleted!']);
+    }
+
+    // The recipe (which ingredients, and how much of each, go into one unit
+    // of this product) - drives the dashboard's COGS/profit estimate.
+    public function ingredients($id)
+    {
+        $product = Product::with('ingredients')->findOrFail($id);
+
+        return response()->json($product->ingredients);
+    }
+
+    public function syncIngredients(Request $request, $id)
+    {
+        $product = Product::findOrFail($id);
+
+        $request->validate([
+            'ingredients'               => 'array',
+            'ingredients.*.ingredient_id' => 'required|exists:bakery_ingredients,id',
+            'ingredients.*.quantity'      => 'required|numeric|min:0.001',
+        ]);
+
+        $sync = collect($request->ingredients ?? [])
+            ->keyBy('ingredient_id')
+            ->map(fn ($row) => ['quantity' => $row['quantity']])
+            ->toArray();
+
+        $product->ingredients()->sync($sync);
+
+        return response()->json([
+            'message'     => 'Recipe updated!',
+            'ingredients' => $product->ingredients()->get(),
+        ]);
     }
 }

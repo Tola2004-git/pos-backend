@@ -41,6 +41,8 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/products', [ProductController::class, 'store']);
         Route::put('/products/{id}', [ProductController::class, 'update']);
         Route::delete('/products/{id}', [ProductController::class, 'destroy']);
+        Route::get('/products/{id}/ingredients', [ProductController::class, 'ingredients']);
+        Route::put('/products/{id}/ingredients', [ProductController::class, 'syncIngredients']);
 
         Route::post('/tables', [TableController::class, 'store']);
         Route::put('/tables/{id}', [TableController::class, 'update']);
@@ -87,7 +89,10 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/orders', [OrderController::class, 'index']);
         Route::get('/orders/latest', [OrderController::class, 'latest']);
         Route::get('/orders/sales-by-cashier', [OrderController::class, 'salesByCashier']);
-        Route::get('/orders/sales-trend', [OrderController::class, 'salesTrend']);
+        Route::get('/orders/sales-summary', [OrderController::class, 'salesSummary']);
+        Route::get('/orders/top-products', [OrderController::class, 'topProducts']);
+        Route::get('/orders/category-sales', [OrderController::class, 'categorySales']);
+        Route::get('/orders/profit-summary', [OrderController::class, 'profitSummary']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
         Route::post('/orders', [OrderController::class, 'store']);
         Route::put('/orders/{id}', [OrderController::class, 'update']);
@@ -101,6 +106,7 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('/cashier-shifts', [CashierShiftController::class, 'index']);
         Route::get('/cashier-shifts/current', [CashierShiftController::class, 'current']);
+        Route::get('/cashier-shifts/cash-movements-summary', [CashierShiftController::class, 'cashMovementsSummary']);
         Route::get('/cashier-shifts/{id}', [CashierShiftController::class, 'show']);
         Route::post('/cashier-shifts/open', [CashierShiftController::class, 'open']);
         Route::put('/cashier-shifts/{id}/close', [CashierShiftController::class, 'close']);

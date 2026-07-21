@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\CashierCashMovement;
 use App\Models\CashierShift;
 use App\Models\Order;
 use Illuminate\Http\Request;
@@ -25,6 +26,46 @@ class CashierShiftController extends Controller
         }
 
         return response()->json($query->paginate($request->per_page ?? 15));
+    }
+
+    // Net cash movements (drops / petty-cash disbursements) for the requested
+    // date range - lets the dashboard show cash-in/cash-out activity without
+    // pulling every open/closed shift's full cashMovements() relation.
+    public function cashMovementsSummary(Request $request)
+    {
+        $user = JWTAuth::parseToken()->authenticate();
+
+        $query = CashierCashMovement::query();
+
+        if ($user->role === 'cashier') {
+            $query->where('user_id', $user->id);
+        }
+
+        if ($request->date_from) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->date_to) {
+            $query->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        $row = $query->selectRaw("
+            COALESCE(SUM(CASE WHEN type = 'cash_in' THEN amount_usd ELSE 0 END), 0) as cash_in_usd,
+            COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount_usd ELSE 0 END), 0) as cash_out_usd,
+            COALESCE(SUM(CASE WHEN type = 'cash_in' THEN amount_khr ELSE 0 END), 0) as cash_in_khr,
+            COALESCE(SUM(CASE WHEN type = 'cash_out' THEN amount_khr ELSE 0 END), 0) as cash_out_khr,
+            COUNT(*) as movements_count
+        ")->first();
+
+        return response()->json([
+            'cash_in_usd' => (float) $row->cash_in_usd,
+            'cash_out_usd' => (float) $row->cash_out_usd,
+            'cash_in_khr' => (float) $row->cash_in_khr,
+            'cash_out_khr' => (float) $row->cash_out_khr,
+            'net_usd' => (float) $row->cash_in_usd - (float) $row->cash_out_usd,
+            'net_khr' => (float) $row->cash_in_khr - (float) $row->cash_out_khr,
+            'movements_count' => (int) $row->movements_count,
+        ]);
     }
 
     public function show(int $id)

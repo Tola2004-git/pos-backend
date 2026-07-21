@@ -6,6 +6,8 @@ use Illuminate\Http\Request;
 use App\Events\OrderChanged;
 use App\Events\TableChanged;
 use App\Models\CashierShift;
+use App\Models\Ingredient;
+use App\Models\IngredientStockLog;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
@@ -19,10 +21,7 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class OrderController extends Controller
 {
-    // Sanity ceilings for cash tendered - high enough to cover any plausible
-    // bill handed to a cashier, low enough to reject a typo'd/forged amount
-    // (e.g. "999999999") that would otherwise pollute change_amount and the
-    // shift's cash-drawer totals.
+
     private const MAX_AMOUNT_PAID_USD = 100000;
     private const MAX_AMOUNT_PAID_KHR = 500000000;
 
@@ -30,9 +29,6 @@ class OrderController extends Controller
     {
         $query = Order::query()->with(['items', 'user', 'paymentMethod', 'table', 'refundedBy']);
 
-        // Cashiers only see their own sales - enforced server-side so it
-        // can't be bypassed by a client omitting/spoofing a filter param.
-        // Admins keep the unrestricted view across every cashier.
         $user = JWTAuth::parseToken()->authenticate();
         if ($user->role === 'cashier') {
             $query->where('user_id', $user->id);
@@ -52,8 +48,6 @@ class OrderController extends Controller
 
         $this->applyDateOrShiftScope($query, $request, $user, 'created_at');
 
-        // Only meaningful for admins - cashiers are already locked to their own
-        // orders above, so this can't be used to see another cashier's sales.
         if ($request->cashier_id) {
             $query->where('user_id', $request->cashier_id);
         }
@@ -62,14 +56,6 @@ class OrderController extends Controller
         return response()->json($orders);
     }
 
-    // Scopes a query to either the cashier's currently open shift
-    // (?current_shift=true, from shift.opened_at to now) or an explicit
-    // date_from/date_to range - the shift takes priority when both are
-    // present and an open shift actually exists, since "current shift"
-    // is a more precise window than whichever date the client defaulted
-    // its date pickers to. Falls back to the date range (or no bound at
-    // all) whenever current_shift isn't requested, isn't a cashier, or
-    // the cashier has no open shift right now.
     private function applyDateOrShiftScope($query, Request $request, $user, string $column)
     {
         if ($request->boolean('current_shift') && $user->role === 'cashier') {
@@ -89,12 +75,6 @@ class OrderController extends Controller
         }
     }
 
-    // Per-cashier sales totals for a date range (or the current shift) -
-    // admins get every cashier side by side, a cashier gets only their own
-    // row (same self-scoping as index() above, so this can't be used to see
-    // another cashier's totals). Also breaks the total down by how it was
-    // paid, since a cashier's end-of-shift cash count needs the cash portion
-    // isolated from card/QR payments that never touch the drawer.
     public function salesByCashier(Request $request)
     {
         $query = Order::query()->where('orders.status', 'completed');
@@ -125,28 +105,218 @@ class OrderController extends Controller
         return response()->json($summary);
     }
 
-    // Daily sales totals for a date range - powers the dashboard's sales
-    // trend chart with a single query instead of one request per day. Same
-    // role-scoping as salesByCashier: a cashier only sees their own daily
-    // totals, never the whole store's.
-    public function salesTrend(Request $request)
+    private function resolvePeriodRanges(string $period, $now)
     {
-        $query = Order::query()->where('orders.status', 'completed');
+        switch ($period) {
+            case 'week':
+                $currentFrom = $now->copy()->startOfWeek();
+                $previousFrom = $currentFrom->copy()->subWeek();
+                $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
+                $trendFrom = $now->copy()->subWeeks(7)->startOfWeek();
+                $groupExpr = "DATE_SUB(DATE(orders.created_at), INTERVAL WEEKDAY(orders.created_at) DAY)";
+                break;
+            case 'month':
+                $currentFrom = $now->copy()->startOfMonth();
+                $previousFrom = $currentFrom->copy()->subMonth();
+                $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
+                $trendFrom = $now->copy()->subMonths(5)->startOfMonth();
+                $groupExpr = "DATE_FORMAT(orders.created_at, '%Y-%m-01')";
+                break;
+            case 'year':
+                $currentFrom = $now->copy()->startOfYear();
+                $previousFrom = $currentFrom->copy()->subYear();
+                $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
+                $trendFrom = $now->copy()->subYears(4)->startOfYear();
+                $groupExpr = "DATE_FORMAT(orders.created_at, '%Y-01-01')";
+                break;
+            default: // day
+                $currentFrom = $now->copy()->startOfDay();
+                $previousFrom = $now->copy()->subDay()->startOfDay();
+                $previousTo = $now->copy()->subDay()->endOfDay();
+                $trendFrom = $now->copy()->subDays(6)->startOfDay();
+                $groupExpr = "DATE(orders.created_at)";
+                break;
+        }
+
+        return [$currentFrom, $previousFrom, $previousTo, $trendFrom, $groupExpr];
+    }
+
+    public function salesSummary(Request $request)
+    {
+        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
+            ? $request->period
+            : 'day';
+
+        $now = now();
+        [$currentFrom, $previousFrom, $previousTo, $trendFrom, $groupExpr] =
+            $this->resolvePeriodRanges($period, $now);
 
         $user = JWTAuth::parseToken()->authenticate();
+        $scoped = function (string $status = 'completed') use ($user) {
+            $q = Order::query()->where('orders.status', $status);
+            if ($user->role === 'cashier') {
+                $q->where('orders.user_id', $user->id);
+            }
+            return $q;
+        };
+
+        $summarize = function ($from, $to) use ($scoped) {
+            $row = $scoped()
+                ->whereBetween('orders.created_at', [$from, $to])
+                ->selectRaw('COUNT(*) as orders_count, COALESCE(SUM(orders.total), 0) as total_sales')
+                ->first();
+
+            return [
+                'orders_count' => (int) $row->orders_count,
+                'total_sales' => (float) $row->total_sales,
+            ];
+        };
+
+        $trend = $scoped()
+            ->where('orders.created_at', '>=', $trendFrom)
+            ->selectRaw("$groupExpr as bucket, SUM(orders.total) as total_sales")
+            ->groupBy('bucket')
+            ->orderBy('bucket')
+            ->get();
+
+        $refundRow = $scoped('refunded')
+            ->whereBetween('orders.refunded_at', [$currentFrom, $now])
+            ->selectRaw('COUNT(*) as refunds_count, COALESCE(SUM(orders.total), 0) as refunds_total')
+            ->first();
+
+        return response()->json([
+            'period' => $period,
+            'current' => $summarize($currentFrom, $now),
+            'previous' => $summarize($previousFrom, $previousTo),
+            'trend' => $trend,
+            'refunds' => [
+                'count' => (int) $refundRow->refunds_count,
+                'total' => (float) $refundRow->refunds_total,
+            ],
+        ]);
+    }
+
+    public function topProducts(Request $request)
+    {
+        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
+            ? $request->period
+            : 'day';
+
+        $now = now();
+        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
+
+        $user = JWTAuth::parseToken()->authenticate();
+
+        $query = OrderItem::query()
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->where('orders.status', 'completed')
+            ->whereNotNull('order_items.product_id')
+            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+
         if ($user->role === 'cashier') {
             $query->where('orders.user_id', $user->id);
         }
 
-        $this->applyDateOrShiftScope($query, $request, $user, 'orders.created_at');
-
-        $summary = $query
-            ->selectRaw('DATE(orders.created_at) as date, COUNT(*) as orders_count, SUM(orders.total) as total_sales')
-            ->groupBy('date')
-            ->orderBy('date')
+        $topProducts = $query
+            ->groupBy('order_items.product_id', 'order_items.product_name')
+            ->selectRaw('
+                order_items.product_id,
+                order_items.product_name,
+                SUM(order_items.quantity) as quantity_sold,
+                SUM(order_items.subtotal) as revenue
+            ')
+            ->orderByDesc('revenue')
+            ->limit(5)
             ->get();
 
-        return response()->json($summary);
+        return response()->json($topProducts);
+    }
+
+    public function categorySales(Request $request)
+    {
+        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
+            ? $request->period
+            : 'day';
+
+        $now = now();
+        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
+
+        $user = JWTAuth::parseToken()->authenticate();
+
+        $query = OrderItem::query()
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->join('products', 'products.id', '=', 'order_items.product_id')
+            ->join('categories', 'categories.id', '=', 'products.category_id')
+            ->where('orders.status', 'completed')
+            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+
+        if ($user->role === 'cashier') {
+            $query->where('orders.user_id', $user->id);
+        }
+
+        $categorySales = $query
+            ->groupBy('categories.id', 'categories.name')
+            ->selectRaw('
+                categories.id as category_id,
+                categories.name as category_name,
+                SUM(order_items.subtotal) as revenue,
+                SUM(order_items.quantity) as quantity_sold
+            ')
+            ->orderByDesc('revenue')
+            ->get();
+
+        return response()->json($categorySales);
+    }
+
+    // Revenue minus cost-of-goods-sold, using each product's recipe
+    // (Product::ingredients, quantity x Ingredient::cost_per_unit) to price
+    // out what was actually sold. Products with no recipe defined contribute
+    // $0 cost - products_without_recipe_count flags how many sold items that
+    // affects, so the UI can caveat the margin instead of presenting it as exact.
+    public function profitSummary(Request $request)
+    {
+        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
+            ? $request->period
+            : 'day';
+
+        $now = now();
+        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
+
+        $user = JWTAuth::parseToken()->authenticate();
+
+        $unitCosts = DB::table('product_ingredients')
+            ->join('bakery_ingredients', 'bakery_ingredients.id', '=', 'product_ingredients.ingredient_id')
+            ->groupBy('product_ingredients.product_id')
+            ->selectRaw('product_ingredients.product_id, SUM(product_ingredients.quantity * bakery_ingredients.cost_per_unit) as unit_cost');
+
+        $itemsQuery = OrderItem::query()
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->leftJoinSub($unitCosts, 'costs', 'costs.product_id', '=', 'order_items.product_id')
+            ->where('orders.status', 'completed')
+            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+
+        if ($user->role === 'cashier') {
+            $itemsQuery->where('orders.user_id', $user->id);
+        }
+
+        $row = $itemsQuery->selectRaw('
+            COALESCE(SUM(order_items.subtotal), 0) as revenue,
+            COALESCE(SUM(order_items.quantity * costs.unit_cost), 0) as cogs,
+            COUNT(DISTINCT CASE WHEN costs.unit_cost IS NULL THEN order_items.product_id END) as products_without_recipe_count
+        ')->first();
+
+        $revenue = (float) $row->revenue;
+        $cogs = (float) $row->cogs;
+        $profit = $revenue - $cogs;
+
+        return response()->json([
+            'period' => $period,
+            'revenue' => $revenue,
+            'cogs' => $cogs,
+            'profit' => $profit,
+            'margin_pct' => $revenue > 0 ? round(($profit / $revenue) * 100, 1) : 0,
+            'products_without_recipe_count' => (int) $row->products_without_recipe_count,
+        ]);
     }
 
     public function show(int $id)
@@ -178,9 +348,6 @@ class OrderController extends Controller
             'amount_paid_usd'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_USD,
             'amount_paid_khr'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_KHR,
             'exchange_rate_used'  => 'nullable|numeric|min:0',
-            // 'refunded' is intentionally excluded - refunds go through the
-            // dedicated refund() endpoint so stock restore, cash-drawer impact,
-            // and a reason are always recorded together.
             'status'              => 'nullable|in:pending,completed,cancelled',
             'table_id'            => 'nullable|exists:tables,id',
             'order_type'          => 'nullable|in:takeaway,self-seating,dine-in',
@@ -202,8 +369,6 @@ class OrderController extends Controller
         }
 
         $user = JWTAuth::parseToken()->authenticate();
-
-        // Cashiers may only edit their own orders; admins can edit any order.
         if ($user->role === 'cashier' && $order->user_id !== $user->id) {
             abort(403, 'You can only edit your own orders.');
         }
@@ -318,9 +483,6 @@ class OrderController extends Controller
 
         try {
             DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total, $change) {
-                // Restore stock for the items being replaced first, and lock each
-                // product row for the rest of the transaction so a concurrent
-                // sale/restock on the same product can't interleave and desync qty.
                 foreach ($order->items as $existingItem) {
                     if (! $existingItem->product_id) {
                         continue;
@@ -341,6 +503,13 @@ class OrderController extends Controller
                         'qty_after'  => $qtyBefore + $existingItem->quantity,
                         'note'       => "Order {$order->order_number} edited",
                     ]);
+                    $this->adjustIngredientStock(
+                        $existingItem->product_id,
+                        $existingItem->quantity,
+                        'cancel_restore',
+                        $user->id,
+                        "Order {$order->order_number} edited",
+                    );
                 }
                 $order->items()->delete();
 
@@ -366,10 +535,6 @@ class OrderController extends Controller
 
                 foreach ($orderItems as $item) {
                     $order->items()->create($item);
-
-                    // Authoritative, lock-protected check: the row is already
-                    // locked above if it existed in the old item set, but a
-                    // product added fresh in this edit needs its own lock here.
                     $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
                     if ($product->qty < $item['quantity']) {
                         throw new \RuntimeException("Insufficient stock for {$product->name}!");
@@ -386,6 +551,13 @@ class OrderController extends Controller
                         'qty_after'  => $qtyBefore - $item['quantity'],
                         'note'       => "Order {$order->order_number} edited",
                     ]);
+                    $this->adjustIngredientStock(
+                        $item['product_id'],
+                        $item['quantity'],
+                        'sale',
+                        $user->id,
+                        "Order {$order->order_number} edited",
+                    );
                 }
             });
         } catch (\RuntimeException $e) {
@@ -415,8 +587,6 @@ class OrderController extends Controller
         } else {
             $this->syncTableStatusForOrder($order);
         }
-
-        // Ensure items include their related product when returning the updated order
         $order->load(['items.product', 'user', 'paymentMethod', 'table']);
 
         RealtimeBroadcaster::send(new OrderChanged($order->id, 'updated'));
@@ -442,8 +612,6 @@ class OrderController extends Controller
             'amount_paid_khr'     => 'nullable|numeric|min:0|max:' . self::MAX_AMOUNT_PAID_KHR,
             'exchange_rate_used'  => 'nullable|numeric|min:0',
             'promotion_id'        => 'nullable|exists:promotions,id',
-            // 'refunded' is intentionally excluded - an order is never created
-            // pre-refunded, only transitioned there via the refund() endpoint.
             'status'              => 'nullable|in:pending,completed,cancelled',
             'table_id'            => 'nullable|exists:tables,id',
             'pager_number'        => 'nullable|string|max:255',
@@ -456,10 +624,6 @@ class OrderController extends Controller
         if ($user->role === 'cashier' && !CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()) {
             return response()->json(['message' => 'Please open your shift before selling.'], 422);
         }
-
-        // A retried checkout (network error, duplicate tab, a client bug
-        // bypassing the submit-button guard) carries the same key - return
-        // the order that was already created instead of charging twice.
         if ($request->idempotency_key) {
             $existing = Order::where('user_id', $user->id)
                 ->where('idempotency_key', $request->idempotency_key)
@@ -585,9 +749,6 @@ class OrderController extends Controller
         }
 
         $idempotencyKey = $request->idempotency_key ?: null;
-
-        // uniqid() is time-based and unique() alone would surface a collision
-        // as a raw 500 - regenerate and retry a handful of times instead.
         $order = null;
         for ($attempts = 0; $attempts < 5; $attempts++) {
             $orderNumber = 'ORD-' . strtoupper(uniqid('', true));
@@ -622,10 +783,6 @@ class OrderController extends Controller
 
                     foreach ($orderItems as $item) {
                         $order->items()->create($item);
-
-                        // Authoritative, lock-protected recheck: the earlier qty
-                        // check above is only a fast-path UX guard and isn't safe
-                        // against concurrent orders racing the same product.
                         $product = Product::where('id', $item['product_id'])->lockForUpdate()->firstOrFail();
                         if ($product->qty < $item['quantity']) {
                             throw new \RuntimeException("Insufficient stock for {$product->name}!");
@@ -642,6 +799,13 @@ class OrderController extends Controller
                             'qty_after'  => $qtyBefore - $item['quantity'],
                             'note'       => "Order {$order->order_number}",
                         ]);
+                        $this->adjustIngredientStock(
+                            $item['product_id'],
+                            $item['quantity'],
+                            'sale',
+                            $user->id,
+                            "Order {$order->order_number}",
+                        );
                     }
 
                     return $order;
@@ -655,7 +819,6 @@ class OrderController extends Controller
                 if (! $isDuplicateOrderNumber || $attempts >= 4) {
                     throw $e;
                 }
-                // order_number collided - loop around and try a fresh one.
             }
         }
 
@@ -668,9 +831,6 @@ class OrderController extends Controller
 
         if ($order->status === 'completed') {
             $exportDate = $order->created_at->toDateString();
-
-            // Runs after the JSON response is flushed to the client, so the
-            // Excel build + Google Drive upload never adds latency to checkout.
             dispatch(function () use ($exportDate) {
                 Artisan::call('app:export-daily-receipts', ['date' => $exportDate]);
             })->afterResponse();
@@ -689,8 +849,6 @@ class OrderController extends Controller
 
         return DB::transaction(function () use ($request, $id, $user) {
             $order = Order::lockForUpdate()->findOrFail($id);
-
-            // Cashiers may only move their own orders; admins can move any order.
             if ($user->role === 'cashier' && $order->user_id !== $user->id) {
                 abort(403, 'You can only move your own orders.');
             }
@@ -705,15 +863,11 @@ class OrderController extends Controller
             if ($oldTable && $oldTable->id == $newTable->id) {
                 return response()->json(['message' => 'Already assigned.', 'order' => $order]);
             }
-
-            // Shared tables (Option 1) let a table hold multiple concurrent active orders
-            // (e.g. one completed order and one pending order side by side). Move all of
-            // them together so a table move never strands an order on the old table.
             $ordersToMove = $order->table_id
                 ? Order::where('table_id', $order->table_id)
-                    ->whereIn('status', ['pending', 'completed'])
-                    ->lockForUpdate()
-                    ->get()
+                ->whereIn('status', ['pending', 'completed'])
+                ->lockForUpdate()
+                ->get()
                 : collect([$order]);
 
             $currentStatus = $oldTable ? $oldTable->status : 'reserved';
@@ -761,8 +915,6 @@ class OrderController extends Controller
         }
 
         $user = JWTAuth::parseToken()->authenticate();
-
-        // Cashiers may only cancel their own sales; admins can cancel any order.
         if ($user->role === 'cashier' && $order->user_id !== $user->id) {
             abort(403, 'You can only cancel your own orders.');
         }
@@ -788,6 +940,13 @@ class OrderController extends Controller
                     'qty_after'  => $qtyBefore + $item->quantity,
                     'note'       => "Order {$order->order_number} cancelled",
                 ]);
+                $this->adjustIngredientStock(
+                    $item->product_id,
+                    $item->quantity,
+                    'cancel_restore',
+                    $user->id,
+                    "Order {$order->order_number} cancelled",
+                );
             }
 
             $order->update(['status' => 'cancelled']);
@@ -802,11 +961,6 @@ class OrderController extends Controller
 
         return response()->json(['message' => 'Order cancelled!', 'order' => $order]);
     }
-
-    // Admin-only, deliberately separate from update(): a refund always
-    // restores stock, requires a reason, and records who approved it - a
-    // cashier flipping their own completed order's status field can't
-    // silently skip any of that.
     public function refund(Request $request, int $id)
     {
         $request->validate([
@@ -842,6 +996,13 @@ class OrderController extends Controller
                     'qty_after'  => $qtyBefore + $item->quantity,
                     'note'       => "Order {$order->order_number} refunded: {$request->reason}",
                 ]);
+                $this->adjustIngredientStock(
+                    $item->product_id,
+                    $item->quantity,
+                    'refund_restore',
+                    $user->id,
+                    "Order {$order->order_number} refunded: {$request->reason}",
+                );
             }
 
             $order->update([
@@ -861,10 +1022,6 @@ class OrderController extends Controller
 
         return response()->json(['message' => 'Order refunded!', 'order' => $order->fresh(['items.product', 'user', 'paymentMethod', 'refundedBy'])]);
     }
-
-    // Increments and returns the reprint counter for loss-prevention visibility
-    // (the receipt itself is rendered client-side; this just tracks how many
-    // times it's been reprinted and by whom it was last requested).
     public function recordReceiptPrint(int $id)
     {
         $order = Order::findOrFail($id);
@@ -885,11 +1042,52 @@ class OrderController extends Controller
             ->where('status', 'completed')
             ->latest()
             ->first();
-
-        // See CashierShiftController::current() - response()->json(null)
-        // silently becomes "{}", not "null", so wrap it to keep the
-        // falsy-check on the frontend meaningful.
         return response()->json(['order' => $order]);
+    }
+
+    // Mirrors the product-stock deduction/restore pattern above, but walks
+    // the product's recipe (Product::ingredients, via product_ingredients)
+    // so raw-material stock moves in lockstep with what was actually sold -
+    // e.g. selling 1 loaf of bread also drains the flour/sugar/eggs it
+    // needs. Products with no recipe defined simply have nothing to loop
+    // over. Throws on insufficient ingredient stock during a 'sale', the
+    // same way Product stock does, so the whole order rolls back together.
+    private function adjustIngredientStock(int $productId, float $quantitySold, string $action, int $userId, string $note): void
+    {
+        $product = Product::with('ingredients')->find($productId);
+        if (! $product) {
+            return;
+        }
+
+        foreach ($product->ingredients as $ingredient) {
+            $consumed = (float) $ingredient->pivot->quantity * $quantitySold;
+
+            $row = Ingredient::where('id', $ingredient->id)->lockForUpdate()->first();
+            if (! $row) {
+                continue;
+            }
+
+            $qtyBefore = $row->quantity;
+
+            if (in_array($action, ['cancel_restore', 'refund_restore'], true)) {
+                $row->increment('quantity', $consumed);
+            } else {
+                if ($row->quantity < $consumed) {
+                    throw new \RuntimeException("Insufficient stock for ingredient \"{$row->name}\" (needed for {$product->name})!");
+                }
+                $row->decrement('quantity', $consumed);
+            }
+
+            IngredientStockLog::create([
+                'ingredient_id' => $row->id,
+                'user_id'       => $userId,
+                'action'        => $action,
+                'quantity'      => $consumed,
+                'qty_before'    => $qtyBefore,
+                'qty_after'     => $row->quantity,
+                'note'          => $note,
+            ]);
+        }
     }
 
     private function syncTableStatusForOrder(Order $order): void
@@ -904,7 +1102,7 @@ class OrderController extends Controller
         }
 
         $table->status = match ($order->status) {
- 
+
             'pending' => in_array($table->status, ['occupied', 'reserved'], true) ? $table->status : 'reserved',
             'completed' => 'occupied',
             default => 'available',

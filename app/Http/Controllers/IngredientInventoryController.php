@@ -51,7 +51,9 @@ class IngredientInventoryController extends Controller
     // Stock History
     public function history(Request $request)
     {
-        $query = IngredientStockLog::with(['ingredient', 'user']);
+        // Same column-limited eager load as InventoryController::history() -
+        // the table only ever displays the ingredient's and user's names.
+        $query = IngredientStockLog::with(['ingredient:id,name,unit', 'user:id,name']);
 
         if ($request->ingredient_id) {
             $query->where('ingredient_id', $request->ingredient_id);
