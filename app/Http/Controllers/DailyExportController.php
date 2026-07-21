@@ -10,7 +10,6 @@ use Illuminate\Support\Facades\Storage;
 
 class DailyExportController extends Controller
 {
-    // List generated daily receipt exports (newest first)
     public function index(Request $request)
     {
         $logs = DailyExportLog::query()
@@ -20,7 +19,6 @@ class DailyExportController extends Controller
         return response()->json($logs);
     }
 
-    // Download the Excel file for a given date (Y-m-d)
     public function download(string $date)
     {
         $log = DailyExportLog::where('export_date', Carbon::parse($date)->toDateString())->first();
@@ -34,8 +32,6 @@ class DailyExportController extends Controller
 
         return $disk->download($log->file_path, basename($log->file_path));
     }
-
-    // Manually (re)generate the export for a given date, defaults to today
     public function generate(Request $request)
     {
         $request->validate([

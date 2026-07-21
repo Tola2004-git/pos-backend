@@ -3,17 +3,14 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\Product;
+use Illuminate\Support\Facades\Auth;
 
 class ProductController extends Controller
 {
     public function index(Request $request)
     {
-        // `fields` is an opt-in lightweight mode for callers (e.g. the
-        // global low-stock poller) that only need a couple of columns -
-        // skipping the default `image` column matters because it can carry
-        // several hundred KB of inline base64 data per product, and this
-        // endpoint is polled every 30s from every page in the app.
         if ($request->fields) {
             $columns = collect(explode(',', $request->fields))
                 ->map(fn ($c) => trim($c))
@@ -107,11 +104,12 @@ class ProductController extends Controller
         }
 
         $product->delete();
+
+        AuditLog::record(Auth::id(), 'product_deleted', 'Product', $id, "Deleted product \"{$product->name}\"");
+
         return response()->json(['message' => 'Product deleted!']);
     }
 
-    // The recipe (which ingredients, and how much of each, go into one unit
-    // of this product) - drives the dashboard's COGS/profit estimate.
     public function ingredients($id)
     {
         $product = Product::with('ingredients')->findOrFail($id);

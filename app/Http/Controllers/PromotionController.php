@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\Promotion;
+use Illuminate\Support\Facades\Auth;
 
 class PromotionController extends Controller
 {
@@ -94,6 +96,8 @@ class PromotionController extends Controller
     {
         $promotion = Promotion::findOrFail($id);
         $promotion->delete();
+
+        AuditLog::record(Auth::id(), 'promotion_deleted', 'Promotion', $id, "Deleted promotion \"{$promotion->name}\"");
 
         return response()->json(['message' => 'Promotion deleted!']);
     }

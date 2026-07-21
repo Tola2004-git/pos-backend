@@ -268,11 +268,6 @@ class OrderController extends Controller
         return response()->json($categorySales);
     }
 
-    // Revenue minus cost-of-goods-sold, using each product's recipe
-    // (Product::ingredients, quantity x Ingredient::cost_per_unit) to price
-    // out what was actually sold. Products with no recipe defined contribute
-    // $0 cost - products_without_recipe_count flags how many sold items that
-    // affects, so the UI can caveat the margin instead of presenting it as exact.
     public function profitSummary(Request $request)
     {
         $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
@@ -1045,13 +1040,6 @@ class OrderController extends Controller
         return response()->json(['order' => $order]);
     }
 
-    // Mirrors the product-stock deduction/restore pattern above, but walks
-    // the product's recipe (Product::ingredients, via product_ingredients)
-    // so raw-material stock moves in lockstep with what was actually sold -
-    // e.g. selling 1 loaf of bread also drains the flour/sugar/eggs it
-    // needs. Products with no recipe defined simply have nothing to loop
-    // over. Throws on insufficient ingredient stock during a 'sale', the
-    // same way Product stock does, so the whole order rolls back together.
     private function adjustIngredientStock(int $productId, float $quantitySold, string $action, int $userId, string $note): void
     {
         $product = Product::with('ingredients')->find($productId);

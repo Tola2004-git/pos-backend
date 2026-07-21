@@ -66,13 +66,6 @@ class TableController extends Controller
         return response()->json(['message' => 'Table cleared!', 'table' => $table]);
     }
 
-    // Cashier-safe table move: only ever flips the `status` field on the two
-    // tables involved, never name/capacity/notes - so it's safe to share with
-    // cashiers without granting them the full admin update() endpoint. Used
-    // for the one case Order::changeTable() can't cover: a table that's
-    // reserved/occupied with no order attached yet (e.g. a walk-in
-    // reservation set from the admin table modal), so there's nothing to
-    // hand off through the order itself.
     public function moveReservation(Request $request, int $id)
     {
         $request->validate([

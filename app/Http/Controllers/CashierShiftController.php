@@ -10,8 +10,6 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class CashierShiftController extends Controller
 {
-    // Cashiers only ever see their own shifts (enforced server-side, same
-    // pattern as OrderController) - admins see everyone's, for the review queue.
     public function index(Request $request)
     {
         $user = JWTAuth::parseToken()->authenticate();
@@ -28,9 +26,6 @@ class CashierShiftController extends Controller
         return response()->json($query->paginate($request->per_page ?? 15));
     }
 
-    // Net cash movements (drops / petty-cash disbursements) for the requested
-    // date range - lets the dashboard show cash-in/cash-out activity without
-    // pulling every open/closed shift's full cashMovements() relation.
     public function cashMovementsSummary(Request $request)
     {
         $user = JWTAuth::parseToken()->authenticate();
@@ -87,12 +82,6 @@ class CashierShiftController extends Controller
         $shift = CashierShift::where('user_id', $user->id)
             ->where('status', 'open')
             ->first();
-
-        // Symfony's JsonResponse constructor replaces a null $data with an
-        // empty \ArrayObject() (its documented XSSI-safety convention), so
-        // response()->json(null) actually serializes to "{}", not "null".
-        // Wrapping in a key sidesteps that - the outer array is never null,
-        // so json_encode() emits a real {"shift":null} the client can check.
         return response()->json(['shift' => $shift]);
     }
 
@@ -140,11 +129,6 @@ class CashierShiftController extends Controller
         }
 
         $closedAt = now();
-
-        // Cash sales rung up by this cashier during the shift window -
-        // matched by the payment method's is_cash flag, not its name, so
-        // renaming/relabeling a payment method can't silently drop it out
-        // of the cash-drawer reconciliation.
         $cashTotals = Order::where('user_id', $user->id)
             ->where('status', 'completed')
             ->whereBetween('created_at', [$shift->opened_at, $closedAt])
@@ -181,10 +165,6 @@ class CashierShiftController extends Controller
         return response()->json(['shift' => $shift->fresh()]);
     }
 
-    // Mid-shift cash drops / safe drops / petty-cash disbursements - recorded
-    // as a structured ledger instead of just the free-text note on close(),
-    // so shift-close reconciliation can account for cash that left/entered
-    // the drawer without a sale.
     public function addCashMovement(Request $request, int $id)
     {
         $request->validate([

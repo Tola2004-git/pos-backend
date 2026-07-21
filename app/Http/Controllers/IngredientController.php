@@ -40,6 +40,19 @@ class IngredientController extends Controller
             }
         }
 
+        if ($request->quality_status) {
+            switch ($request->quality_status) {
+                case 'expired':
+                    $query->whereNotNull('expiry_date')->whereDate('expiry_date', '<', now());
+                    break;
+                case 'expiring_soon':
+                    $query->whereNotNull('expiry_date')
+                        ->whereDate('expiry_date', '>=', now())
+                        ->whereDate('expiry_date', '<=', now()->addDays(3));
+                    break;
+            }
+        }
+
         $perPage = $request->per_page ?? 10;
         $ingredients = $query->latest()->paginate($perPage);
 
@@ -54,6 +67,7 @@ class IngredientController extends Controller
             'quantity'             => 'nullable|numeric|min:0',
             'low_stock_threshold'  => 'nullable|numeric|min:0',
             'cost_per_unit'        => 'nullable|numeric|min:0',
+            'expiry_date'          => 'nullable|date',
         ]);
 
         $ingredient = Ingredient::create([
@@ -63,6 +77,7 @@ class IngredientController extends Controller
             'quantity'             => $request->quantity ?? 0,
             'low_stock_threshold'  => $request->low_stock_threshold ?? 0,
             'cost_per_unit'        => $request->cost_per_unit ?? 0,
+            'expiry_date'          => $request->expiry_date ?? null,
             'supplier'             => $request->supplier ?? null,
             'status'               => $request->status ?? true,
             'note'                 => $request->note ?? null,
@@ -81,6 +96,7 @@ class IngredientController extends Controller
             'quantity'             => 'nullable|numeric|min:0',
             'low_stock_threshold'  => 'nullable|numeric|min:0',
             'cost_per_unit'        => 'nullable|numeric|min:0',
+            'expiry_date'          => 'nullable|date',
         ]);
 
         $ingredient->update([
@@ -89,6 +105,7 @@ class IngredientController extends Controller
             'unit'                 => $request->unit,
             'low_stock_threshold'  => $request->low_stock_threshold ?? $ingredient->low_stock_threshold,
             'cost_per_unit'        => $request->cost_per_unit ?? $ingredient->cost_per_unit,
+            'expiry_date'          => $request->has('expiry_date') ? $request->expiry_date : $ingredient->expiry_date,
             'supplier'             => $request->supplier ?? null,
             'status'               => $request->status ?? $ingredient->status,
             'note'                 => $request->note ?? null,

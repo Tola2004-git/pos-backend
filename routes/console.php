@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 Schedule::command('app:export-daily-receipts')
     ->dailyAt('00:00')
     ->withoutOverlapping();
+
+Schedule::command('app:backup-database')
+    ->dailyAt('01:30')
+    ->withoutOverlapping();

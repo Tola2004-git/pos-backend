@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AuditLog;
 use App\Models\Setting;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 
 class SettingController extends Controller
 {
@@ -21,6 +23,8 @@ class SettingController extends Controller
         ]);
 
         Setting::put('low_stock_threshold', (string) $request->threshold);
+
+        AuditLog::record(Auth::id(), 'setting_updated', 'Setting', null, "Set low_stock_threshold to {$request->threshold}");
 
         return response()->json(['threshold' => (int) $request->threshold]);
     }

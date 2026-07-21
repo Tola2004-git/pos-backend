@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -45,6 +46,8 @@ class UserController extends Controller
             'profile_image' => $request->profile_image ?? null,
         ]);
 
+        AuditLog::record(Auth::id(), 'user_created', 'User', $user->id, "Created user \"{$user->name}\" ({$user->email})");
+
         return response()->json(['message' => 'User created!', 'user' => $user]);
     }
 
@@ -77,6 +80,8 @@ class UserController extends Controller
 
         $user->update($data);
 
+        AuditLog::record(Auth::id(), 'user_updated', 'User', $user->id, "Updated user \"{$user->name}\" ({$user->email})");
+
         return response()->json(['message' => 'User updated!', 'user' => $user]);
     }
 
@@ -97,6 +102,9 @@ class UserController extends Controller
         }
 
         $user->delete();
+
+        AuditLog::record(Auth::id(), 'user_deleted', 'User', $id, "Deleted user \"{$user->name}\" ({$user->email})");
+
         return response()->json(['message' => 'User deleted!']);
     }
 }

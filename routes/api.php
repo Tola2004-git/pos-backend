@@ -15,6 +15,9 @@ use App\Http\Controllers\PromotionController;
 use App\Http\Controllers\DailyExportController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\CashierShiftController;
+use App\Http\Controllers\BackupController;
+use App\Http\Controllers\ExpenseController;
+use App\Http\Controllers\AuditLogController;
 use GuzzleHttp\Psr7\Response;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');
@@ -75,6 +78,24 @@ Route::middleware('auth:api')->group(function () {
 
         Route::put('/cashier-shifts/{id}/review', [CashierShiftController::class, 'review']);
         Route::put('/orders/{id}/refund', [OrderController::class, 'refund']);
+
+        Route::get('/expenses', [ExpenseController::class, 'index']);
+        Route::post('/expenses', [ExpenseController::class, 'store']);
+        Route::put('/expenses/{id}', [ExpenseController::class, 'update']);
+        Route::delete('/expenses/{id}', [ExpenseController::class, 'destroy']);
+        Route::get('/expenses/summary', [ExpenseController::class, 'summary']);
+
+        Route::get('/audit-logs', [AuditLogController::class, 'index']);
+
+        // Backups can dump/restore the entire database - throttled tighter
+        // than ordinary admin writes since each run is expensive and restore
+        // is destructive.
+        Route::middleware('throttle:5,1')->group(function () {
+            Route::get('/backups', [BackupController::class, 'index']);
+            Route::post('/backups/generate', [BackupController::class, 'generate']);
+            Route::get('/backups/{id}/download', [BackupController::class, 'download']);
+            Route::post('/backups/{id}/restore', [BackupController::class, 'restore']);
+        });
     });
 
     // Shared: admin + cashier. Orders/tables (POS operation) and read-only

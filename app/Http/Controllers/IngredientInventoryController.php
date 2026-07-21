@@ -16,6 +16,7 @@ class IngredientInventoryController extends Controller
             'ingredient_id' => 'required|exists:bakery_ingredients,id',
             'action'        => 'required|in:add,remove',
             'quantity'      => 'required|numeric|min:0.01',
+            'expiry_date'   => 'nullable|date',
         ]);
 
         $ingredient = Ingredient::findOrFail($request->ingredient_id);
@@ -23,6 +24,9 @@ class IngredientInventoryController extends Controller
 
         if ($request->action === 'add') {
             $ingredient->quantity += $request->quantity;
+            if ($request->filled('expiry_date')) {
+                $ingredient->expiry_date = $request->expiry_date;
+            }
         } else {
             if ($ingredient->quantity < $request->quantity) {
                 return response()->json(['message' => 'Insufficient stock!'], 422);
@@ -51,8 +55,6 @@ class IngredientInventoryController extends Controller
     // Stock History
     public function history(Request $request)
     {
-        // Same column-limited eager load as InventoryController::history() -
-        // the table only ever displays the ingredient's and user's names.
         $query = IngredientStockLog::with(['ingredient:id,name,unit', 'user:id,name']);
 
         if ($request->ingredient_id) {
