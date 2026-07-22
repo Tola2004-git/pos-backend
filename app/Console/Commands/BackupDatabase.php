@@ -59,6 +59,7 @@ class BackupDatabase extends Command
 
             $sizeBytes = filesize($absolutePath);
             $disksStored = ['local'];
+            $googleError = null;
 
             try {
                 $stream = fopen($absolutePath, 'r');
@@ -68,16 +69,24 @@ class BackupDatabase extends Command
                 }
                 $disksStored[] = 'google';
             } catch (\Throwable $e) {
-                $this->warn("Google Drive upload failed, keeping local copy only: {$e->getMessage()}");
+                // Persisted on the log row (not just console/`storage/logs`) -
+                // this command is often triggered via Artisan::call() from a
+                // web request (BackupController@generate), whose console
+                // output is captured into a throwaway buffer and never
+                // reaches any log a production host makes visible.
+                $googleError = $e->getMessage();
+                \Illuminate\Support\Facades\Log::warning("Backup Google Drive upload failed: {$googleError}");
+                $this->warn("Google Drive upload failed, keeping local copy only: {$googleError}");
             }
 
             $log->update([
-                'status'       => 'success',
-                'file_path'    => $relativePath,
-                'disks'        => $disksStored,
-                'size_bytes'   => $sizeBytes,
-                'tables_count' => $tablesCount,
-                'completed_at' => now(),
+                'status'        => 'success',
+                'file_path'     => $relativePath,
+                'disks'         => $disksStored,
+                'size_bytes'    => $sizeBytes,
+                'tables_count'  => $tablesCount,
+                'error_message' => $googleError,
+                'completed_at'  => now(),
             ]);
 
             $this->info("Backup complete: {$fileName} ({$sizeBytes} bytes) stored on: " . implode(', ', $disksStored));
