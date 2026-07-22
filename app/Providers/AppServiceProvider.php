@@ -31,7 +31,19 @@ class AppServiceProvider extends ServiceProvider
             $client = new GoogleClient();
             $client->setClientId($config['clientId']);
             $client->setClientSecret($config['clientSecret']);
-            $client->refreshToken($config['refreshToken']);
+
+            // refreshToken() swallows a failed exchange - Google's response
+            // comes back as an array without an `access_token` key (e.g.
+            // {"error": "invalid_grant", ...}) rather than an exception, so
+            // the client is left with no token and every subsequent Drive
+            // API call fails with a generic, unrelated-looking 401 far from
+            // here. Surface the real reason immediately instead.
+            $token = $client->refreshToken($config['refreshToken']);
+            if (! isset($token['access_token'])) {
+                throw new \RuntimeException(
+                    'Google Drive OAuth token refresh failed: ' . json_encode($token)
+                );
+            }
 
             $options = [];
             if (! empty($config['sharedFolderId'] ?? null)) {
