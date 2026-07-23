@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\AuditLog;
 use App\Models\Expense;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
@@ -108,14 +109,37 @@ class ExpenseController extends Controller
             : 'day';
 
         $now = now();
-        $from = match ($period) {
-            'week'  => $now->copy()->startOfWeek(),
-            'month' => $now->copy()->startOfMonth(),
-            'year'  => $now->copy()->startOfYear(),
-            default => $now->copy()->startOfDay(),
-        };
 
-        $query = Expense::whereBetween('expense_date', [$from->toDateString(), $now->toDateString()]);
+        if ($request->date_from && $request->date_to) {
+            try {
+                $fromDate = Carbon::parse($request->date_from)->startOfDay();
+                $toDate = Carbon::parse($request->date_to)->startOfDay();
+            } catch (\Exception $e) {
+                $fromDate = null;
+            }
+
+            if ($fromDate && $fromDate->lte($toDate)) {
+                // Mirrors OrderController::MAX_CUSTOM_RANGE_DAYS so a stray
+                // multi-year range can't be requested from either endpoint.
+                if ($fromDate->diffInDays($toDate) + 1 > OrderController::MAX_CUSTOM_RANGE_DAYS) {
+                    $fromDate = $toDate->copy()->subDays(OrderController::MAX_CUSTOM_RANGE_DAYS - 1);
+                }
+                $from = $fromDate->toDateString();
+                $to = $toDate->toDateString();
+            }
+        }
+
+        if (! isset($from, $to)) {
+            $from = (match ($period) {
+                'week'  => $now->copy()->startOfWeek(),
+                'month' => $now->copy()->startOfMonth(),
+                'year'  => $now->copy()->startOfYear(),
+                default => $now->copy()->startOfDay(),
+            })->toDateString();
+            $to = $now->toDateString();
+        }
+
+        $query = Expense::whereBetween('expense_date', [$from, $to]);
 
         $totals = (clone $query)
             ->selectRaw('COALESCE(SUM(amount_usd), 0) as total_usd, COALESCE(SUM(amount_khr), 0) as total_khr, COUNT(*) as expenses_count')

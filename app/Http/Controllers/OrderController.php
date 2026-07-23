@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Carbon\Carbon;
 use App\Events\OrderChanged;
 use App\Events\TableChanged;
 use App\Models\CashierShift;
@@ -24,6 +25,8 @@ class OrderController extends Controller
 
     private const MAX_AMOUNT_PAID_USD = 100000;
     private const MAX_AMOUNT_PAID_KHR = 500000000;
+
+    public const MAX_CUSTOM_RANGE_DAYS = 366;
 
     public function index(Request $request)
     {
@@ -105,6 +108,36 @@ class OrderController extends Controller
         return response()->json($summary);
     }
 
+    private function dateGroupExpr(string $granularity): string
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return match ($granularity) {
+                'week' => "date(orders.created_at, '-' || ((CAST(strftime('%w', orders.created_at) AS INTEGER) + 6) % 7) || ' days')",
+                'month' => "strftime('%Y-%m-01', orders.created_at)",
+                'year' => "strftime('%Y-01-01', orders.created_at)",
+                default => "DATE(orders.created_at)",
+            };
+        }
+
+        return match ($granularity) {
+            'week' => "DATE_SUB(DATE(orders.created_at), INTERVAL WEEKDAY(orders.created_at) DAY)",
+            'month' => "DATE_FORMAT(orders.created_at, '%Y-%m-01')",
+            'year' => "DATE_FORMAT(orders.created_at, '%Y-01-01')",
+            default => "DATE(orders.created_at)",
+        };
+    }
+
+    // CONCAT() is MySQL/Postgres syntax; SQLite has no CONCAT function and
+    // uses the || operator instead.
+    private function concatExpr(string $prefix, string $column): string
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return "'{$prefix}' || {$column}";
+        }
+
+        return "CONCAT('{$prefix}', {$column})";
+    }
+
     private function resolvePeriodRanges(string $period, $now)
     {
         switch ($period) {
@@ -113,43 +146,80 @@ class OrderController extends Controller
                 $previousFrom = $currentFrom->copy()->subWeek();
                 $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
                 $trendFrom = $now->copy()->subWeeks(7)->startOfWeek();
-                $groupExpr = "DATE_SUB(DATE(orders.created_at), INTERVAL WEEKDAY(orders.created_at) DAY)";
+                $groupExpr = $this->dateGroupExpr('week');
                 break;
             case 'month':
                 $currentFrom = $now->copy()->startOfMonth();
                 $previousFrom = $currentFrom->copy()->subMonth();
                 $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
                 $trendFrom = $now->copy()->subMonths(5)->startOfMonth();
-                $groupExpr = "DATE_FORMAT(orders.created_at, '%Y-%m-01')";
+                $groupExpr = $this->dateGroupExpr('month');
                 break;
             case 'year':
                 $currentFrom = $now->copy()->startOfYear();
                 $previousFrom = $currentFrom->copy()->subYear();
                 $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
                 $trendFrom = $now->copy()->subYears(4)->startOfYear();
-                $groupExpr = "DATE_FORMAT(orders.created_at, '%Y-01-01')";
+                $groupExpr = $this->dateGroupExpr('year');
                 break;
-            default: // day
+            default:
                 $currentFrom = $now->copy()->startOfDay();
                 $previousFrom = $now->copy()->subDay()->startOfDay();
                 $previousTo = $now->copy()->subDay()->endOfDay();
                 $trendFrom = $now->copy()->subDays(6)->startOfDay();
-                $groupExpr = "DATE(orders.created_at)";
+                $groupExpr = $this->dateGroupExpr('day');
                 break;
         }
 
         return [$currentFrom, $previousFrom, $previousTo, $trendFrom, $groupExpr];
     }
 
-    public function salesSummary(Request $request)
+    private function resolveRange(Request $request, $now): array
     {
         $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
             ? $request->period
             : 'day';
 
-        $now = now();
+        if ($request->date_from && $request->date_to) {
+            try {
+                $currentFrom = Carbon::parse($request->date_from)->startOfDay();
+                $currentTo = Carbon::parse($request->date_to)->endOfDay();
+            } catch (\Exception $e) {
+                $currentFrom = null;
+            }
+
+            if ($currentFrom && $currentFrom->lte($currentTo)) {
+                if ($currentFrom->diffInDays($currentTo) + 1 > self::MAX_CUSTOM_RANGE_DAYS) {
+                    $currentFrom = $currentTo->copy()->subDays(self::MAX_CUSTOM_RANGE_DAYS - 1)->startOfDay();
+                }
+
+                $days = $currentFrom->diffInDays($currentTo) + 1;
+                $previousTo = $currentFrom->copy()->subSecond();
+                $previousFrom = $previousTo->copy()->subDays($days - 1)->startOfDay();
+
+                if ($days <= 35) {
+                    $groupExpr = $this->dateGroupExpr('day');
+                } elseif ($days <= 180) {
+                    $groupExpr = $this->dateGroupExpr('week');
+                } else {
+                    $groupExpr = $this->dateGroupExpr('month');
+                }
+
+                return [$period, $currentFrom, $currentTo, $previousFrom, $previousTo, $currentFrom, $groupExpr];
+            }
+        }
+
         [$currentFrom, $previousFrom, $previousTo, $trendFrom, $groupExpr] =
             $this->resolvePeriodRanges($period, $now);
+
+        return [$period, $currentFrom, $now, $previousFrom, $previousTo, $trendFrom, $groupExpr];
+    }
+
+    public function salesSummary(Request $request)
+    {
+        $now = now();
+        [$period, $currentFrom, $currentTo, $previousFrom, $previousTo, $trendFrom, $groupExpr] =
+            $this->resolveRange($request, $now);
 
         $user = JWTAuth::parseToken()->authenticate();
         $scoped = function (string $status = 'completed') use ($user) {
@@ -174,19 +244,20 @@ class OrderController extends Controller
 
         $trend = $scoped()
             ->where('orders.created_at', '>=', $trendFrom)
+            ->where('orders.created_at', '<=', $currentTo)
             ->selectRaw("$groupExpr as bucket, SUM(orders.total) as total_sales")
             ->groupBy('bucket')
             ->orderBy('bucket')
             ->get();
 
         $refundRow = $scoped('refunded')
-            ->whereBetween('orders.refunded_at', [$currentFrom, $now])
+            ->whereBetween('orders.refunded_at', [$currentFrom, $currentTo])
             ->selectRaw('COUNT(*) as refunds_count, COALESCE(SUM(orders.total), 0) as refunds_total')
             ->first();
 
         return response()->json([
             'period' => $period,
-            'current' => $summarize($currentFrom, $now),
+            'current' => $summarize($currentFrom, $currentTo),
             'previous' => $summarize($previousFrom, $previousTo),
             'trend' => $trend,
             'refunds' => [
@@ -198,12 +269,8 @@ class OrderController extends Controller
 
     public function topProducts(Request $request)
     {
-        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
-            ? $request->period
-            : 'day';
-
         $now = now();
-        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
+        [, $currentFrom, $currentTo] = $this->resolveRange($request, $now);
 
         $user = JWTAuth::parseToken()->authenticate();
 
@@ -211,7 +278,7 @@ class OrderController extends Controller
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->where('orders.status', 'completed')
             ->whereNotNull('order_items.product_id')
-            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+            ->whereBetween('orders.created_at', [$currentFrom, $currentTo]);
 
         if ($user->role === 'cashier') {
             $query->where('orders.user_id', $user->id);
@@ -234,21 +301,17 @@ class OrderController extends Controller
 
     public function categorySales(Request $request)
     {
-        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
-            ? $request->period
-            : 'day';
-
         $now = now();
-        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
+        [, $currentFrom, $currentTo] = $this->resolveRange($request, $now);
 
         $user = JWTAuth::parseToken()->authenticate();
 
         $query = OrderItem::query()
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->join('products', 'products.id', '=', 'order_items.product_id')
-            ->join('categories', 'categories.id', '=', 'products.category_id')
+            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
             ->where('orders.status', 'completed')
-            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+            ->whereBetween('orders.created_at', [$currentFrom, $currentTo]);
 
         if ($user->role === 'cashier') {
             $query->where('orders.user_id', $user->id);
@@ -270,14 +333,8 @@ class OrderController extends Controller
 
     public function profitSummary(Request $request)
     {
-        $period = in_array($request->period, ['day', 'week', 'month', 'year'], true)
-            ? $request->period
-            : 'day';
-
         $now = now();
-        [$currentFrom] = $this->resolvePeriodRanges($period, $now);
-
-        $user = JWTAuth::parseToken()->authenticate();
+        [$period, $currentFrom, $currentTo] = $this->resolveRange($request, $now);
 
         $unitCosts = DB::table('product_ingredients')
             ->join('bakery_ingredients', 'bakery_ingredients.id', '=', 'product_ingredients.ingredient_id')
@@ -288,17 +345,18 @@ class OrderController extends Controller
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->leftJoinSub($unitCosts, 'costs', 'costs.product_id', '=', 'order_items.product_id')
             ->where('orders.status', 'completed')
-            ->whereBetween('orders.created_at', [$currentFrom, $now]);
+            ->whereBetween('orders.created_at', [$currentFrom, $currentTo]);
 
-        if ($user->role === 'cashier') {
-            $itemsQuery->where('orders.user_id', $user->id);
-        }
+        $productKey = $this->concatExpr('p', 'order_items.product_id');
+        $itemKey = $this->concatExpr('i', 'order_items.id');
 
-        $row = $itemsQuery->selectRaw('
+        $row = $itemsQuery->selectRaw("
             COALESCE(SUM(order_items.subtotal), 0) as revenue,
             COALESCE(SUM(order_items.quantity * costs.unit_cost), 0) as cogs,
-            COUNT(DISTINCT CASE WHEN costs.unit_cost IS NULL THEN order_items.product_id END) as products_without_recipe_count
-        ')->first();
+            COUNT(DISTINCT CASE WHEN costs.unit_cost IS NULL THEN
+                COALESCE($productKey, $itemKey)
+            END) as products_without_recipe_count
+        ")->first();
 
         $revenue = (float) $row->revenue;
         $cogs = (float) $row->cogs;

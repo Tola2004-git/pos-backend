@@ -24,15 +24,6 @@ class BackupDatabase extends Command
      */
     protected $description = 'Dump the database to a .sql file and store it on the local and Google Drive disks';
 
-    /**
-     * Execute the console command.
-     *
-     * Writes a plain SQL dump (DROP + CREATE TABLE + batched INSERTs) using
-     * only PDO, deliberately avoiding a shell_exec('mysqldump ...') call -
-     * shared hosting frequently disables shell_exec, so a dependency on the
-     * mysqldump binary being on PATH would make backups silently unusable
-     * on exactly the hosting this app is likely to run on.
-     */
     public function handle(): int
     {
         $timestamp = Carbon::now();
@@ -69,11 +60,6 @@ class BackupDatabase extends Command
                 }
                 $disksStored[] = 'google';
             } catch (\Throwable $e) {
-                // Persisted on the log row (not just console/`storage/logs`) -
-                // this command is often triggered via Artisan::call() from a
-                // web request (BackupController@generate), whose console
-                // output is captured into a throwaway buffer and never
-                // reaches any log a production host makes visible.
                 $googleError = $e->getMessage();
                 \Illuminate\Support\Facades\Log::warning("Backup Google Drive upload failed: {$googleError}");
                 $this->warn("Google Drive upload failed, keeping local copy only: {$googleError}");
@@ -125,13 +111,6 @@ class BackupDatabase extends Command
             $createSql = $createRow->{'Create Table'};
 
             fwrite($handle, "DROP TABLE IF EXISTS `{$table}`;\n{$createSql};\n\n");
-
-            // Manual offset/limit loop rather than chunk()/chunkById() -
-            // Laravel 12's chunk() requires an orderBy, but not every table
-            // here has an auto-increment `id` column (e.g. Laravel's own
-            // password_reset_tokens is keyed by email). This is a read-only
-            // snapshot so chunk()'s "rows can shift under concurrent writes"
-            // caveat doesn't matter here.
             $batchSize = 500;
             $offset = 0;
             $total = DB::table($table)->count();
@@ -150,12 +129,6 @@ class BackupDatabase extends Command
         return count($tables);
     }
 
-    // Sub-batches by accumulated byte size (not just row count) before
-    // flushing an INSERT - a handful of rows can still blow past MySQL's
-    // max_allowed_packet on their own if the table stores large values
-    // (e.g. products.image holds base64-encoded pictures), and a single
-    // oversized INSERT statement fails the same way one giant multi-
-    // statement dump does.
     private const MAX_STATEMENT_BYTES = 512 * 1024;
 
     private function writeInsertBatch($handle, string $table, \Illuminate\Support\Collection $rows, \PDO $pdo): void

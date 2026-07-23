@@ -2,19 +2,32 @@
 
 namespace Tests\Feature;
 
-use App\Http\Controllers\OrderController;
 use App\Models\Order;
 use App\Models\Table;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 class TableSessionFlowTest extends TestCase
 {
     use RefreshDatabase;
 
+    private function admin(): User
+    {
+        return User::create([
+            'name' => 'Admin',
+            'email' => 'admin_' . uniqid('', true) . '@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+        ]);
+    }
+
     public function test_pending_order_can_be_moved_to_another_table(): void
     {
+        $token = auth('api')->login($this->admin());
+
         $oldTable = Table::create([
             'name' => 'Table 1',
             'capacity' => 4,
@@ -40,14 +53,12 @@ class TableSessionFlowTest extends TestCase
             'table_id' => $oldTable->id,
         ]);
 
-        $controller = new OrderController();
-        $request = Request::create('/orders/' . $order->id . '/change-table', 'POST', [
-            'table_id' => $newTable->id,
-        ]);
+        $response = $this->withHeader('Authorization', 'Bearer ' . $token)
+            ->postJson('/api/orders/' . $order->id . '/change-table', [
+                'table_id' => $newTable->id,
+            ]);
 
-        $response = $controller->changeTable($request, $order->id);
-
-        $this->assertEquals(200, $response->getStatusCode());
+        $response->assertStatus(200);
 
         $order->refresh();
         $oldTable->refresh();
@@ -60,6 +71,8 @@ class TableSessionFlowTest extends TestCase
 
     public function test_moving_a_shared_table_moves_all_its_active_orders(): void
     {
+        $token = auth('api')->login($this->admin());
+
         $oldTable = Table::create([
             'name' => 'Table 1',
             'capacity' => 4,
@@ -98,14 +111,12 @@ class TableSessionFlowTest extends TestCase
             'table_id' => $oldTable->id,
         ]);
 
-        $controller = new OrderController();
-        $request = Request::create('/orders/' . $completedOrder->id . '/change-table', 'POST', [
-            'table_id' => $newTable->id,
-        ]);
+        $response = $this->withHeader('Authorization', 'Bearer ' . $token)
+            ->postJson('/api/orders/' . $completedOrder->id . '/change-table', [
+                'table_id' => $newTable->id,
+            ]);
 
-        $response = $controller->changeTable($request, $completedOrder->id);
-
-        $this->assertEquals(200, $response->getStatusCode());
+        $response->assertStatus(200);
 
         $completedOrder->refresh();
         $pendingOrder->refresh();

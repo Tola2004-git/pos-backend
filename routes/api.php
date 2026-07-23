@@ -79,6 +79,9 @@ Route::middleware('auth:api')->group(function () {
         Route::put('/cashier-shifts/{id}/review', [CashierShiftController::class, 'review']);
         Route::put('/orders/{id}/refund', [OrderController::class, 'refund']);
 
+        // Profit/COGS/margin exposes supplier cost data - admin only, not cashiers.
+        Route::get('/orders/profit-summary', [OrderController::class, 'profitSummary']);
+
         Route::get('/expenses', [ExpenseController::class, 'index']);
         Route::post('/expenses', [ExpenseController::class, 'store']);
         Route::put('/expenses/{id}', [ExpenseController::class, 'update']);
@@ -113,7 +116,6 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/orders/sales-summary', [OrderController::class, 'salesSummary']);
         Route::get('/orders/top-products', [OrderController::class, 'topProducts']);
         Route::get('/orders/category-sales', [OrderController::class, 'categorySales']);
-        Route::get('/orders/profit-summary', [OrderController::class, 'profitSummary']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
         Route::post('/orders', [OrderController::class, 'store']);
         Route::put('/orders/{id}', [OrderController::class, 'update']);
