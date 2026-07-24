@@ -5,10 +5,23 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\AuditLog;
 use App\Models\Product;
+use App\Models\Setting;
 use Illuminate\Support\Facades\Auth;
 
 class ProductController extends Controller
 {
+    public function lowStock()
+    {
+        $threshold = (int) Setting::get('low_stock_threshold', 10);
+
+        $products = Product::where('status', 1)
+            ->where('qty', '<=', $threshold)
+            ->orderBy('qty')
+            ->get(['id', 'name', 'qty']);
+
+        return response()->json($products);
+    }
+
     public function index(Request $request)
     {
         if ($request->fields) {
@@ -46,13 +59,24 @@ class ProductController extends Controller
         return response()->json($products);
     }
 
+    private function nullifyBlank(Request $request, array $fields): void
+    {
+        $request->merge(array_fill_keys(
+            array_filter($fields, fn ($field) => $request->input($field) === ''),
+            null,
+        ));
+    }
+
     public function store(Request $request)
     {
+        $this->nullifyBlank($request, ['category_id', 'sku', 'barcode']);
+
         $request->validate([
-            'name'    => 'required|string',
-            'price'   => 'required|numeric|min:0',
-            'sku'     => 'nullable|string|unique:products,sku',
-            'barcode' => 'nullable|string|unique:products,barcode',
+            'name'        => 'required|string',
+            'category_id' => 'nullable|exists:categories,id',
+            'price'       => 'required|numeric|min:0',
+            'sku'         => 'nullable|string|unique:products,sku',
+            'barcode'     => 'nullable|string|unique:products,barcode',
         ]);
 
         $product = Product::create([
@@ -73,11 +97,14 @@ class ProductController extends Controller
     {
         $product = Product::findOrFail($id);
 
+        $this->nullifyBlank($request, ['category_id', 'sku', 'barcode']);
+
         $request->validate([
-            'name'    => 'required|string',
-            'price'   => 'required|numeric|min:0',
-            'sku'     => 'nullable|string|unique:products,sku,' . $id,
-            'barcode' => 'nullable|string|unique:products,barcode,' . $id,
+            'name'        => 'required|string',
+            'category_id' => 'nullable|exists:categories,id',
+            'price'       => 'required|numeric|min:0',
+            'sku'         => 'nullable|string|unique:products,sku,' . $id,
+            'barcode'     => 'nullable|string|unique:products,barcode,' . $id,
         ]);
 
         $product->update([

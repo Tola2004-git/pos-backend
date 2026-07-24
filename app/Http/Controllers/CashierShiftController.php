@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\ShiftChanged;
 use App\Models\CashierCashMovement;
 use App\Models\CashierShift;
 use App\Models\Order;
+use App\Models\User;
+use App\Support\RealtimeBroadcaster;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class CashierShiftController extends Controller
@@ -88,32 +92,43 @@ class CashierShiftController extends Controller
     public function open(Request $request)
     {
         $request->validate([
-            'opening_cash_usd' => 'required|numeric|min:0',
-            'opening_cash_khr' => 'nullable|numeric|min:0',
+            'opening_cash_usd' => 'required|numeric|min:0|max:100000',
+            'opening_cash_khr' => 'nullable|numeric|min:0|max:500000000',
         ]);
 
         $user = JWTAuth::parseToken()->authenticate();
 
-        if (CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()) {
-            return response()->json(['message' => 'You already have an open shift.'], 422);
-        }
+        return DB::transaction(function () use ($request, $user) {
+            // Locks the user's own row as a mutex - there's no "open shift"
+            // row to lock before one exists, so this serializes concurrent
+            // open() calls from the same user instead (a double-click or two
+            // tabs both racing to open one), closing the window where both
+            // could pass the "no open shift yet" check before either commits.
+            User::where('id', $user->id)->lockForUpdate()->first();
 
-        $shift = CashierShift::create([
-            'user_id'          => $user->id,
-            'opened_at'        => now(),
-            'opening_cash_usd' => $request->opening_cash_usd,
-            'opening_cash_khr' => $request->opening_cash_khr ?? 0,
-            'status'           => 'open',
-        ]);
+            if (CashierShift::where('user_id', $user->id)->where('status', 'open')->exists()) {
+                return response()->json(['message' => 'You already have an open shift.'], 422);
+            }
 
-        return response()->json(['shift' => $shift]);
+            $shift = CashierShift::create([
+                'user_id'          => $user->id,
+                'opened_at'        => now(),
+                'opening_cash_usd' => $request->opening_cash_usd,
+                'opening_cash_khr' => $request->opening_cash_khr ?? 0,
+                'status'           => 'open',
+            ]);
+
+            RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'opened'));
+
+            return response()->json(['shift' => $shift]);
+        });
     }
 
     public function close(Request $request, int $id)
     {
         $request->validate([
-            'counted_cash_usd' => 'required|numeric|min:0',
-            'counted_cash_khr' => 'nullable|numeric|min:0',
+            'counted_cash_usd' => 'required|numeric|min:0|max:100000',
+            'counted_cash_khr' => 'nullable|numeric|min:0|max:500000000',
             'note'             => 'nullable|string',
         ]);
 
@@ -162,6 +177,8 @@ class CashierShiftController extends Controller
             'status'            => 'pending_review',
         ]);
 
+        RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'closed'));
+
         return response()->json(['shift' => $shift->fresh()]);
     }
 
@@ -197,6 +214,8 @@ class CashierShiftController extends Controller
             'reason'     => $request->reason,
         ]);
 
+        RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'cash_movement'));
+
         return response()->json(['movement' => $movement], 201);
     }
 
@@ -220,6 +239,8 @@ class CashierShiftController extends Controller
             'reviewed_at' => now(),
             'review_note' => $request->review_note,
         ]);
+
+        RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'reviewed'));
 
         return response()->json(['shift' => $shift->fresh(['user', 'reviewer'])]);
     }

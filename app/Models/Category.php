@@ -17,4 +17,9 @@ class Category extends Model
     {
         return $this->hasMany(Ingredient::class);
     }
+
+    public function promotions()
+    {
+        return $this->belongsToMany(Promotion::class, 'promotion_categories');
+    }
 }

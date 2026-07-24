@@ -64,7 +64,20 @@ class CategoryController extends Controller
 
     public function destroy($id)
     {
-        Category::findOrFail($id)->delete();
+        $category = Category::findOrFail($id);
+
+        // promotion_categories has an onDelete('cascade') FK, so without this
+        // guard deleting the category would silently strip it from any
+        // promotion scoped to it - leaving that promotion applying to
+        // nothing, with no error or warning to the admin who deleted it.
+        if ($category->promotions()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete a category that is used by a promotion. Remove it from the promotion first.',
+            ], 422);
+        }
+
+        $category->delete();
+
         return response()->json(['message' => 'Category deleted!']);
     }
 }

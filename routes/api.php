@@ -24,9 +24,7 @@ Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,
 
 Route::middleware('auth:api')->group(function () {
     // Available to any authenticated user, regardless of role.
-    Route::get('/exchange-rates', function () {
-        return response()->json(['usd_to_khr' => 4100]);
-    });
+    Route::get('/exchange-rates', [SettingController::class, 'getExchangeRate']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/me', [AuthController::class, 'me']);
 
@@ -75,6 +73,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/daily-exports/{date}/download', [DailyExportController::class, 'download']);
 
         Route::put('/settings/low-stock-threshold', [SettingController::class, 'updateLowStockThreshold']);
+        Route::put('/exchange-rates', [SettingController::class, 'updateExchangeRate']);
 
         Route::put('/cashier-shifts/{id}/review', [CashierShiftController::class, 'review']);
         Route::put('/orders/{id}/refund', [OrderController::class, 'refund']);
@@ -106,6 +105,7 @@ Route::middleware('auth:api')->group(function () {
     Route::middleware('role:admin,cashier')->group(function () {
         Route::get('/categories', [CategoryController::class, 'index']);
         Route::get('/products', [ProductController::class, 'index']);
+        Route::get('/products/low-stock', [ProductController::class, 'lowStock']);
         Route::get('/payment-methods', [PaymentMethodController::class, 'index']);
         Route::get('/promotions', [PromotionController::class, 'index']);
         Route::get('/settings/low-stock-threshold', [SettingController::class, 'getLowStockThreshold']);
@@ -124,6 +124,7 @@ Route::middleware('auth:api')->group(function () {
         Route::post('/orders/{id}/record-receipt-print', [OrderController::class, 'recordReceiptPrint']);
 
         Route::get('/tables', [TableController::class, 'index']);
+        Route::get('/tables/counts', [TableController::class, 'counts']);
         Route::post('/tables/{id}/clear', [TableController::class, 'clear']);
         Route::post('/tables/{id}/move-reservation', [TableController::class, 'moveReservation']);
 

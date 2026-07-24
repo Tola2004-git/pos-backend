@@ -28,4 +28,24 @@ class SettingController extends Controller
 
         return response()->json(['threshold' => (int) $request->threshold]);
     }
+
+    public function getExchangeRate()
+    {
+        return response()->json([
+            'usd_to_khr' => (float) Setting::get('exchange_rate', 4100),
+        ]);
+    }
+
+    public function updateExchangeRate(Request $request)
+    {
+        $request->validate([
+            'rate' => 'required|numeric|min:1',
+        ]);
+
+        Setting::put('exchange_rate', (string) $request->rate);
+
+        AuditLog::record(Auth::id(), 'setting_updated', 'Setting', null, "Set exchange_rate to {$request->rate}");
+
+        return response()->json(['usd_to_khr' => (float) $request->rate]);
+    }
 }

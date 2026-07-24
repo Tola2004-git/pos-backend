@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Carbon\Carbon;
 use App\Events\OrderChanged;
 use App\Events\TableChanged;
+use App\Models\CashierCashMovement;
 use App\Models\CashierShift;
 use App\Models\Ingredient;
 use App\Models\IngredientStockLog;
@@ -250,20 +251,27 @@ class OrderController extends Controller
             ->orderBy('bucket')
             ->get();
 
-        $refundRow = $scoped('refunded')
-            ->whereBetween('orders.refunded_at', [$currentFrom, $currentTo])
-            ->selectRaw('COUNT(*) as refunds_count, COALESCE(SUM(orders.total), 0) as refunds_total')
-            ->first();
+        $refundsBetween = function ($from, $to) use ($scoped) {
+            $row = $scoped('refunded')
+                ->whereBetween('orders.refunded_at', [$from, $to])
+                ->selectRaw('COUNT(*) as refunds_count, COALESCE(SUM(orders.total), 0) as refunds_total')
+                ->first();
+
+            return [
+                'count' => (int) $row->refunds_count,
+                'total' => (float) $row->refunds_total,
+            ];
+        };
+
+        $refunds = $refundsBetween($currentFrom, $currentTo);
+        $previousRefunds = $refundsBetween($previousFrom, $previousTo);
 
         return response()->json([
             'period' => $period,
             'current' => $summarize($currentFrom, $currentTo),
             'previous' => $summarize($previousFrom, $previousTo),
             'trend' => $trend,
-            'refunds' => [
-                'count' => (int) $refundRow->refunds_count,
-                'total' => (float) $refundRow->refunds_total,
-            ],
+            'refunds' => $refunds + ['previous_total' => $previousRefunds['total']],
         ]);
     }
 
@@ -452,12 +460,11 @@ class OrderController extends Controller
         $discount = 0;
         $promotion = null;
         $tax = (float) ($request->tax ?? 0);
-        $subtotalFromPayload = $request->subtotal;
-        $totalFromPayload = $request->total;
-
-        if ($subtotalFromPayload !== null) {
-            $subtotal = (float) $subtotalFromPayload;
-        }
+        // subtotal/total are recomputed from product prices and promotions
+        // below - never taken from the request. Trusting a client-submitted
+        // total here would let anyone editing a pending order (e.g. a
+        // cashier via devtools) record any total they like while the
+        // customer still pays full price at the register.
         $subtotal = round($subtotal, 2);
 
         $activePromotions = Promotion::with(['products', 'categories'])
@@ -517,13 +524,7 @@ class OrderController extends Controller
 
         $discount = round((float) $discount, 2);
         $tax = round($tax, 2);
-
-        if ($totalFromPayload !== null) {
-            $total = (float) $totalFromPayload;
-        } else {
-            $total = $subtotal - $discount + $tax;
-        }
-        $total = max(0, round($total, 2));
+        $total = max(0, round($subtotal - $discount + $tax, 2));
 
         $newStatus = $request->status ?? $order->status;
         $amountPaid = $request->amount_paid !== null ? (float) $request->amount_paid : (float) $order->amount_paid;
@@ -667,7 +668,6 @@ class OrderController extends Controller
             'promotion_id'        => 'nullable|exists:promotions,id',
             'status'              => 'nullable|in:pending,completed,cancelled',
             'table_id'            => 'nullable|exists:tables,id',
-            'pager_number'        => 'nullable|string|max:255',
             'order_type'          => 'nullable|in:takeaway,self-seating,dine-in',
             'idempotency_key'     => 'nullable|string|max:100',
         ]);
@@ -732,6 +732,10 @@ class OrderController extends Controller
         $promotionsToApply = $promotion ? collect([$promotion]) : $activePromotions;
 
         foreach ($promotionsToApply as $promo) {
+            if ($promo->min_purchase && $subtotal < $promo->min_purchase) {
+                continue;
+            }
+
             if ($promo->apply_to === 'all') {
                 if ($promo->type === 'percentage') {
                     $discount += ($subtotal * $promo->value) / 100;
@@ -742,10 +746,6 @@ class OrderController extends Controller
             }
 
             foreach ($orderItems as $item) {
-                if ($promo->min_purchase && $subtotal < $promo->min_purchase) {
-                    continue;
-                }
-
                 $matches = false;
 
                 if ($promo->apply_to === 'product') {
@@ -813,7 +813,6 @@ class OrderController extends Controller
                         'user_id'           => $user->id,
                         'customer_name'     => $request->customer_name ?? null,
                         'customer_phone'    => $request->customer_phone ?? null,
-                        'pager_number'      => $request->pager_number ?? null,
                         'order_type'        => $request->order_type ?? 'takeaway',
                         'subtotal'          => $subtotal,
                         'discount'          => $discount,
@@ -967,6 +966,14 @@ class OrderController extends Controller
             return response()->json(['message' => 'Order already cancelled!'], 422);
         }
 
+        // Cancel is for unpaid (pending/held) orders only - reversing a
+        // completed sale has to go through refund(), which is admin-only and
+        // requires a reason, so it leaves the accountability trail a plain
+        // cancel doesn't.
+        if ($order->status !== 'pending') {
+            return response()->json(['message' => 'Only pending orders can be cancelled - completed orders must be refunded instead.'], 422);
+        }
+
         $user = JWTAuth::parseToken()->authenticate();
         if ($user->role === 'cashier' && $order->user_id !== $user->id) {
             abort(403, 'You can only cancel your own orders.');
@@ -1020,7 +1027,7 @@ class OrderController extends Controller
             'reason' => 'required|string|max:500',
         ]);
 
-        $order = Order::with('items')->findOrFail($id);
+        $order = Order::with(['items', 'paymentMethod'])->findOrFail($id);
 
         if ($order->status !== 'completed') {
             return response()->json(['message' => 'Only completed orders can be refunded.'], 422);
@@ -1064,6 +1071,37 @@ class OrderController extends Controller
                 'refunded_at'   => now(),
                 'refund_reason' => $request->reason,
             ]);
+
+            // A cash refund physically leaves whichever drawer is open right
+            // now, not necessarily the admin clicking "Refund" here - prefer
+            // the original cashier's still-open shift (most likely: same-day
+            // refund, same cashier still on the register) and fall back to
+            // the refunding admin's own open shift. If neither is open,
+            // there's no active shift to misstate, so nothing to record.
+            if ($order->paymentMethod && $order->paymentMethod->is_cash) {
+                $cashUsd = (float) $order->amount_paid_usd;
+                $cashKhr = (float) $order->amount_paid_khr;
+
+                if ($cashUsd > 0 || $cashKhr > 0) {
+                    $targetShift = CashierShift::where('user_id', $order->user_id)
+                        ->where('status', 'open')
+                        ->first()
+                        ?? CashierShift::where('user_id', $user->id)
+                            ->where('status', 'open')
+                            ->first();
+
+                    if ($targetShift) {
+                        CashierCashMovement::create([
+                            'cashier_shift_id' => $targetShift->id,
+                            'user_id'          => $user->id,
+                            'type'             => 'cash_out',
+                            'amount_usd'       => $cashUsd,
+                            'amount_khr'       => $cashKhr,
+                            'reason'           => "Refund for order {$order->order_number}: {$request->reason}",
+                        ]);
+                    }
+                }
+            }
         });
 
         $this->syncTableStatusForOrder($order);
