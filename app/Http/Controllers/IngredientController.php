@@ -124,6 +124,16 @@ class IngredientController extends Controller
             ], 422);
         }
 
+        // product_ingredients has an onDelete('cascade') FK, so without this
+        // guard deleting the ingredient would silently strip it from every
+        // recipe it's part of - breaking that product's automatic stock
+        // deduction on sale and understating its COGS, with no warning.
+        if ($ingredient->products()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete an ingredient that is used in a product recipe. Remove it from the recipe first.',
+            ], 422);
+        }
+
         $ingredient->delete();
         return response()->json(['message' => 'Ingredient deleted!']);
     }

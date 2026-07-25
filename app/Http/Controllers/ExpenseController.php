@@ -61,6 +61,8 @@ class ExpenseController extends Controller
             'user_id'    => $user->id,
         ]);
 
+        AuditLog::record($user->id, 'expense_created', 'Expense', $expense->id, "Created expense \"{$expense->title}\" ({$expense->amount_usd} USD / {$expense->amount_khr} KHR)");
+
         return response()->json(['message' => 'Expense recorded!', 'data' => $expense->load('user:id,name')], 201);
     }
 
@@ -81,11 +83,17 @@ class ExpenseController extends Controller
             return response()->json(['message' => 'Enter an amount in USD or KHR.'], 422);
         }
 
+        $before = "\"{$expense->title}\" ({$expense->amount_usd} USD / {$expense->amount_khr} KHR)";
+        $user = JWTAuth::parseToken()->authenticate();
+
         $expense->update([
             ...$data,
             'amount_usd' => $data['amount_usd'] ?? 0,
             'amount_khr' => $data['amount_khr'] ?? 0,
         ]);
+
+        $after = "\"{$expense->title}\" ({$expense->amount_usd} USD / {$expense->amount_khr} KHR)";
+        AuditLog::record($user->id, 'expense_updated', 'Expense', $expense->id, "Updated expense {$before} -> {$after}");
 
         return response()->json(['message' => 'Expense updated!', 'data' => $expense->load('user:id,name')]);
     }
@@ -93,6 +101,18 @@ class ExpenseController extends Controller
     public function destroy(int $id)
     {
         $expense = Expense::findOrFail($id);
+
+        // Expenses feed the accounting summary() report - once a month is
+        // old enough to have been reviewed/closed out, silently deleting
+        // one of its entries would change historical totals with no trace
+        // beyond the audit log. Editing (still logged) stays available for
+        // corrections; only outright removal is time-limited.
+        if ($expense->expense_date->lt(now()->subMonth())) {
+            return response()->json([
+                'message' => 'This expense is more than a month old and can no longer be deleted. Edit it instead if it needs correcting.',
+            ], 422);
+        }
+
         $user = JWTAuth::parseToken()->authenticate();
 
         $expense->delete();

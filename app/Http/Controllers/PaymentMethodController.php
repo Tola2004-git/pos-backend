@@ -37,6 +37,17 @@ class PaymentMethodController extends Controller
         $method = PaymentMethod::findOrFail($id);
         $data = $request->validated();
 
+        // The seeded Cash method is the sole source of truth for is_cash-
+        // based cash-shift accounting (CashierShiftController sums by the
+        // is_cash flag, not by name) - renaming it away from "Cash" wouldn't
+        // break that accounting, but it would confuse cashiers looking at
+        // the payment picker, so keep its name locked from the admin UI.
+        if ($method->is_cash && $data['name'] !== $method->name) {
+            return response()->json([
+                'message' => 'The Cash payment method cannot be renamed.',
+            ], 422);
+        }
+
         $method->update([
             'name'           => $data['name'],
             'is_cash'        => $data['is_cash'] ?? $method->is_cash,
@@ -55,6 +66,12 @@ class PaymentMethodController extends Controller
     public function destroy(int $id)
     {
         $method = PaymentMethod::findOrFail($id);
+
+        if ($method->is_cash) {
+            return response()->json([
+                'message' => 'The Cash payment method cannot be deleted.',
+            ], 422);
+        }
 
         if ($method->orders()->exists()) {
             return response()->json([

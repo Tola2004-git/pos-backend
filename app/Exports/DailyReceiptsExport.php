@@ -132,12 +132,19 @@ class DailyReceiptsExport implements
                 $sheet->getStyle("A1:{$lastCol}{$lastRow}")->getBorders()
                     ->getAllBorders()->setBorderStyle(Border::BORDER_THIN);
 
-                $sheet->getStyle("E2:G{$lastRow}")
-                    ->getNumberFormat()->setFormatCode('"$"#,##0.00');
-                $sheet->getStyle("G2:G{$lastRow}")
-                    ->getFont()->setBold(true);
-
+                // On a day with zero completed orders, $lastRow is 1 (header
+                // only) - "E2:G{$lastRow}" would then read as "E2:G1", a
+                // reversed range (start row 2 > end row 1). PhpSpreadsheet
+                // doesn't throw on that, but it writes a malformed sheet
+                // that Google Drive/Excel can't open, so this - and the
+                // grand-total block, which needs an actual data row to sum -
+                // only run once there's at least one order row to style.
                 if ($lastRow >= 2) {
+                    $sheet->getStyle("E2:G{$lastRow}")
+                        ->getNumberFormat()->setFormatCode('"$"#,##0.00');
+                    $sheet->getStyle("G2:G{$lastRow}")
+                        ->getFont()->setBold(true);
+
                     $totalRow = $lastRow + 2;
                     $sheet->setCellValue("F{$totalRow}", 'GRAND TOTAL');
                     $sheet->setCellValue("G{$totalRow}", "=SUM(G2:G{$lastRow})");

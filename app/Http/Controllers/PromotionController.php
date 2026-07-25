@@ -9,6 +9,19 @@ use Illuminate\Support\Facades\Auth;
 
 class PromotionController extends Controller
 {
+    // The frontend already blocks value > 100 for type=percentage, but that's
+    // bypassable by calling the API directly - a >100% promotion combined
+    // with the (uncapped) per-item discount math would push item totals
+    // negative before the order-level total gets floored at 0.
+    private function percentageValueRule(Request $request): \Closure
+    {
+        return function ($attribute, $value, $fail) use ($request) {
+            if ($request->input('type') === 'percentage' && $value > 100) {
+                $fail('The value may not be greater than 100 for a percentage promotion.');
+            }
+        };
+    }
+
     public function index(Request $request)
     {
         $query = Promotion::query();
@@ -30,8 +43,8 @@ class PromotionController extends Controller
     {
         $data = $request->validate([
             'name'         => 'required|string|max:255|unique:promotions,name',
-            'type'         => 'required|in:percentage,fixed,bogo',
-            'value'        => 'required|numeric|min:0',
+            'type'         => 'required|in:percentage,fixed',
+            'value'        => ['required', 'numeric', 'min:0', $this->percentageValueRule($request)],
             'apply_to'     => 'required|in:all,product,category',
             'min_purchase' => 'nullable|numeric|min:0',
             'start_date'   => 'nullable|date',
@@ -62,8 +75,8 @@ class PromotionController extends Controller
 
         $data = $request->validate([
             'name'         => 'required|string|max:255|unique:promotions,name,' . $promotion->id,
-            'type'         => 'required|in:percentage,fixed,bogo',
-            'value'        => 'required|numeric|min:0',
+            'type'         => 'required|in:percentage,fixed',
+            'value'        => ['required', 'numeric', 'min:0', $this->percentageValueRule($request)],
             'apply_to'     => 'required|in:all,product,category',
             'min_purchase' => 'nullable|numeric|min:0',
             'start_date'   => 'nullable|date',

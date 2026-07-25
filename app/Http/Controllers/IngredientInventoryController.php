@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Ingredient;
 use App\Models\IngredientStockLog;
+use Illuminate\Support\Facades\DB;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class IngredientInventoryController extends Controller
@@ -19,35 +20,43 @@ class IngredientInventoryController extends Controller
             'expiry_date'   => 'nullable|date',
         ]);
 
-        $ingredient = Ingredient::findOrFail($request->ingredient_id);
-        $qtyBefore = $ingredient->quantity;
-
-        if ($request->action === 'add') {
-            $ingredient->quantity += $request->quantity;
-            if ($request->filled('expiry_date')) {
-                $ingredient->expiry_date = $request->expiry_date;
-            }
-        } else {
-            if ($ingredient->quantity < $request->quantity) {
-                return response()->json(['message' => 'Insufficient stock!'], 422);
-            }
-            $ingredient->quantity -= $request->quantity;
-        }
-
-        $ingredient->save();
-
-        // Log
         $user = JWTAuth::parseToken()->authenticate();
-        IngredientStockLog::create([
-            'ingredient_id' => $ingredient->id,
-            'user_id'       => $user->id,
-            'action'        => $request->action,
-            'quantity'      => $request->quantity,
-            'qty_before'    => $qtyBefore,
-            'qty_after'     => $ingredient->quantity,
-            'supplier'      => $request->supplier ?? null,
-            'note'          => $request->note ?? null,
-        ]);
+
+        try {
+            $ingredient = DB::transaction(function () use ($request, $user) {
+                $ingredient = Ingredient::where('id', $request->ingredient_id)->lockForUpdate()->firstOrFail();
+                $qtyBefore = $ingredient->quantity;
+
+                if ($request->action === 'add') {
+                    $ingredient->quantity += $request->quantity;
+                    if ($request->filled('expiry_date')) {
+                        $ingredient->expiry_date = $request->expiry_date;
+                    }
+                } else {
+                    if ($ingredient->quantity < $request->quantity) {
+                        throw new \RuntimeException('Insufficient stock!');
+                    }
+                    $ingredient->quantity -= $request->quantity;
+                }
+
+                $ingredient->save();
+
+                IngredientStockLog::create([
+                    'ingredient_id' => $ingredient->id,
+                    'user_id'       => $user->id,
+                    'action'        => $request->action,
+                    'quantity'      => $request->quantity,
+                    'qty_before'    => $qtyBefore,
+                    'qty_after'     => $ingredient->quantity,
+                    'supplier'      => $request->supplier ?? null,
+                    'note'          => $request->note ?? null,
+                ]);
+
+                return $ingredient;
+            });
+        } catch (\RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
 
         return response()->json(['message' => 'Stock updated!', 'ingredient' => $ingredient]);
     }
