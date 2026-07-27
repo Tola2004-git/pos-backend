@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\Ingredient;
+use Illuminate\Support\Facades\Auth;
 
 class IngredientController extends Controller
 {
@@ -83,6 +85,8 @@ class IngredientController extends Controller
             'note'                 => $request->note ?? null,
         ]);
 
+        AuditLog::record(Auth::id(), 'ingredient_created', 'Ingredient', $ingredient->id, "Created ingredient \"{$ingredient->name}\"");
+
         return response()->json(['message' => 'Ingredient created!', 'ingredient' => $ingredient->load('category')]);
     }
 
@@ -111,6 +115,8 @@ class IngredientController extends Controller
             'note'                 => $request->note ?? null,
         ]);
 
+        AuditLog::record(Auth::id(), 'ingredient_updated', 'Ingredient', $ingredient->id, "Updated ingredient \"{$ingredient->name}\"");
+
         return response()->json(['message' => 'Ingredient updated!', 'ingredient' => $ingredient->load('category')]);
     }
 
@@ -134,7 +140,11 @@ class IngredientController extends Controller
             ], 422);
         }
 
+        $name = $ingredient->name;
         $ingredient->delete();
+
+        AuditLog::record(Auth::id(), 'ingredient_deleted', 'Ingredient', $id, "Deleted ingredient \"{$name}\"");
+
         return response()->json(['message' => 'Ingredient deleted!']);
     }
 }

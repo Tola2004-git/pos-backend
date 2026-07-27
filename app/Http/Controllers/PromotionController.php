@@ -66,6 +66,8 @@ class PromotionController extends Controller
             $promotion->categories()->sync($data['category_ids']);
         }
 
+        AuditLog::record(Auth::id(), 'promotion_created', 'Promotion', $promotion->id, "Created promotion \"{$promotion->name}\"");
+
         return response()->json(['message' => 'Promotion created!', 'data' => $promotion], 201);
     }
 
@@ -101,6 +103,8 @@ class PromotionController extends Controller
         } else {
             $promotion->categories()->detach();
         }
+
+        AuditLog::record(Auth::id(), 'promotion_updated', 'Promotion', $promotion->id, "Updated promotion \"{$promotion->name}\"");
 
         return response()->json(['message' => 'Promotion updated!', 'data' => $promotion]);
     }

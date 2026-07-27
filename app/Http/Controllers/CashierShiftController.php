@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Events\ShiftChanged;
+use App\Models\AuditLog;
 use App\Models\CashierCashMovement;
 use App\Models\CashierShift;
 use App\Models\Order;
@@ -144,13 +145,23 @@ class CashierShiftController extends Controller
         }
 
         $closedAt = now();
+        // amount_paid_usd/amount_paid_khr record what the customer handed
+        // over (gross tender), not what's left in the drawer after change is
+        // given back - summing them as-is overstates expected cash by every
+        // change amount. Change is physically given back in KHR (small riel
+        // notes stand in for USD coins), regardless of which currency was
+        // tendered, so it's netted out of the KHR side only, converted at
+        // that order's own exchange rate.
         $cashTotals = Order::where('user_id', $user->id)
             ->where('status', 'completed')
             ->whereBetween('created_at', [$shift->opened_at, $closedAt])
             ->whereHas('paymentMethod', function ($q) {
                 $q->where('is_cash', true);
             })
-            ->selectRaw('COALESCE(SUM(amount_paid_usd), 0) as total_usd, COALESCE(SUM(amount_paid_khr), 0) as total_khr')
+            ->selectRaw("
+                COALESCE(SUM(amount_paid_usd), 0) as total_usd,
+                COALESCE(SUM(amount_paid_khr) - SUM(change_amount * COALESCE(exchange_rate_used, 4100)), 0) as total_khr
+            ")
             ->first();
 
         $movementTotals = $shift->cashMovements()
@@ -185,10 +196,11 @@ class CashierShiftController extends Controller
     public function addCashMovement(Request $request, int $id)
     {
         $request->validate([
-            'type'        => 'required|in:cash_in,cash_out',
-            'amount_usd'  => 'nullable|numeric|min:0|max:100000',
-            'amount_khr'  => 'nullable|numeric|min:0|max:500000000',
-            'reason'      => 'required|string|max:255',
+            'type'             => 'required|in:cash_in,cash_out',
+            'amount_usd'       => 'nullable|numeric|min:0|max:100000',
+            'amount_khr'       => 'nullable|numeric|min:0|max:500000000',
+            'reason'           => 'required|string|max:255',
+            'idempotency_key'  => 'nullable|string|max:100',
         ]);
 
         if ((float) ($request->amount_usd ?? 0) <= 0 && (float) ($request->amount_khr ?? 0) <= 0) {
@@ -206,13 +218,34 @@ class CashierShiftController extends Controller
             return response()->json(['message' => 'This shift is already closed.'], 422);
         }
 
-        $movement = $shift->cashMovements()->create([
-            'user_id'    => $user->id,
-            'type'       => $request->type,
-            'amount_usd' => $request->amount_usd ?? 0,
-            'amount_khr' => $request->amount_khr ?? 0,
-            'reason'     => $request->reason,
-        ]);
+        // Guards against a fast double-tap or a retried request silently
+        // recording the same cash movement twice and skewing close()'s
+        // reconciliation - same pattern as Order::store()'s idempotency_key.
+        if ($request->idempotency_key) {
+            $existing = CashierCashMovement::where('idempotency_key', $request->idempotency_key)->first();
+            if ($existing) {
+                return response()->json(['movement' => $existing], 200);
+            }
+        }
+
+        try {
+            $movement = $shift->cashMovements()->create([
+                'user_id'         => $user->id,
+                'type'            => $request->type,
+                'amount_usd'      => $request->amount_usd ?? 0,
+                'amount_khr'      => $request->amount_khr ?? 0,
+                'reason'          => $request->reason,
+                'idempotency_key' => $request->idempotency_key ?: null,
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            if ($e->getCode() === '23000' && $request->idempotency_key) {
+                $existing = CashierCashMovement::where('idempotency_key', $request->idempotency_key)->first();
+                if ($existing) {
+                    return response()->json(['movement' => $existing], 200);
+                }
+            }
+            throw $e;
+        }
 
         RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'cash_movement'));
 
@@ -239,6 +272,8 @@ class CashierShiftController extends Controller
             'reviewed_at' => now(),
             'review_note' => $request->review_note,
         ]);
+
+        AuditLog::record($user->id, 'shift_reviewed', 'CashierShift', $shift->id, "Reviewed shift for \"{$shift->user->name}\"" . ($request->review_note ? ": {$request->review_note}" : ''));
 
         RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'reviewed'));
 

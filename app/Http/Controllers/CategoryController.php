@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\Category;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
 class CategoryController extends Controller
@@ -37,6 +39,8 @@ class CategoryController extends Controller
             'status' => $request->status ?? true,
         ]);
 
+        AuditLog::record(Auth::id(), 'category_created', 'Category', $category->id, "Created category \"{$category->name}\"");
+
         return response()->json(['message' => 'Category created!', 'category' => $category]);
     }
 
@@ -59,6 +63,8 @@ class CategoryController extends Controller
             'status' => $request->status ?? $category->status,
         ]);
 
+        AuditLog::record(Auth::id(), 'category_updated', 'Category', $category->id, "Updated category \"{$category->name}\"");
+
         return response()->json(['message' => 'Category updated!', 'category' => $category]);
     }
 
@@ -76,7 +82,10 @@ class CategoryController extends Controller
             ], 422);
         }
 
+        $name = $category->name;
         $category->delete();
+
+        AuditLog::record(Auth::id(), 'category_deleted', 'Category', $id, "Deleted category \"{$name}\"");
 
         return response()->json(['message' => 'Category deleted!']);
     }

@@ -90,6 +90,8 @@ class ProductController extends Controller
             'status'      => $request->status ?? true,
         ]);
 
+        AuditLog::record(Auth::id(), 'product_created', 'Product', $product->id, "Created product \"{$product->name}\"");
+
         return response()->json(['message' => 'Product created!', 'product' => $product->load('category')]);
     }
 
@@ -116,6 +118,8 @@ class ProductController extends Controller
             'image'       => $request->image ?? $product->image,
             'status'      => $request->status ?? $product->status,
         ]);
+
+        AuditLog::record(Auth::id(), 'product_updated', 'Product', $product->id, "Updated product \"{$product->name}\"");
 
         return response()->json(['message' => 'Product updated!', 'product' => $product->load('category')]);
     }

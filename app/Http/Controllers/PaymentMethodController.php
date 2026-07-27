@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AuditLog;
 use App\Models\PaymentMethod;
 use App\Http\Requests\StorePaymentMethodRequest;
 use App\Http\Requests\UpdatePaymentMethodRequest;
+use Illuminate\Support\Facades\Auth;
 
 class PaymentMethodController extends Controller
 {
@@ -28,6 +30,8 @@ class PaymentMethodController extends Controller
             'account_name'   => $data['account_name'] ?? null,
             'status'         => $data['status'] ?? true,
         ]);
+
+        AuditLog::record(Auth::id(), 'payment_method_created', 'PaymentMethod', $method->id, "Created payment method \"{$method->name}\"");
 
         return response()->json(['message' => 'Payment method created!', 'data' => $method], 201);
     }
@@ -60,6 +64,8 @@ class PaymentMethodController extends Controller
             'status'         => $data['status'] ?? $method->status,
         ]);
 
+        AuditLog::record(Auth::id(), 'payment_method_updated', 'PaymentMethod', $method->id, "Updated payment method \"{$method->name}\"");
+
         return response()->json(['message' => 'Payment method updated!', 'data' => $method]);
     }
 
@@ -79,7 +85,11 @@ class PaymentMethodController extends Controller
             ], 409);
         }
 
+        $name = $method->name;
         $method->delete();
+
+        AuditLog::record(Auth::id(), 'payment_method_deleted', 'PaymentMethod', $id, "Deleted payment method \"{$name}\"");
+
         return response()->json(['message' => 'Payment method deleted!']);
     }
 }

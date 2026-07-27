@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Carbon\Carbon;
 use App\Events\OrderChanged;
 use App\Events\TableChanged;
+use App\Models\AuditLog;
 use App\Models\CashierCashMovement;
 use App\Models\CashierShift;
 use App\Models\Ingredient;
@@ -100,7 +101,7 @@ class OrderController extends Controller
                 COUNT(*) as orders_count,
                 SUM(orders.total) as total_sales,
                 SUM(CASE WHEN payment_methods.is_cash = 1 THEN orders.amount_paid_usd ELSE 0 END) as cash_usd_total,
-                SUM(CASE WHEN payment_methods.is_cash = 1 THEN orders.amount_paid_khr ELSE 0 END) as cash_khr_total,
+                SUM(CASE WHEN payment_methods.is_cash = 1 THEN orders.amount_paid_khr - (orders.change_amount * COALESCE(orders.exchange_rate_used, 4100)) ELSE 0 END) as cash_khr_total,
                 SUM(CASE WHEN payment_methods.name IS NOT NULL AND payment_methods.is_cash = 0 THEN orders.total ELSE 0 END) as digital_total
             ')
             ->orderByDesc('total_sales')
@@ -909,12 +910,20 @@ class OrderController extends Controller
                 return response()->json(['message' => 'Only pending or completed orders can be moved.'], 422);
             }
 
-            $newTable = Table::findOrFail($request->table_id);
-            $oldTable = Table::find($order->table_id);
+            // Lock both rows for the duration of the transaction so a concurrent
+            // move/seat request can't target the same table before this one
+            // commits its status change - mirrors TableController::moveReservation().
+            $newTable = Table::lockForUpdate()->findOrFail($request->table_id);
+            $oldTable = $order->table_id ? Table::lockForUpdate()->find($order->table_id) : null;
 
             if ($oldTable && $oldTable->id == $newTable->id) {
                 return response()->json(['message' => 'Already assigned.', 'order' => $order]);
             }
+
+            if ($newTable->status !== 'available') {
+                return response()->json(['message' => 'Please choose an available table to move to.'], 422);
+            }
+
             $ordersToMove = $order->table_id
                 ? Order::where('table_id', $order->table_id)
                 ->whereIn('status', ['pending', 'completed'])
@@ -1106,6 +1115,8 @@ class OrderController extends Controller
 
         $this->syncTableStatusForOrder($order);
 
+        AuditLog::record($user->id, 'order_refunded', 'Order', $order->id, "Refunded order {$order->order_number}: {$request->reason}");
+
         RealtimeBroadcaster::send(new OrderChanged($order->id, 'refunded'));
         if ($order->table_id) {
             RealtimeBroadcaster::send(new TableChanged((int) $order->table_id, 'refunded'));
@@ -1180,7 +1191,7 @@ class OrderController extends Controller
             return;
         }
 
-        $table = Table::find($order->table_id);
+        $table = Table::lockForUpdate()->find($order->table_id);
         if (! $table) {
             return;
         }

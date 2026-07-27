@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\AuditLog;
 use App\Models\DailyExportLog;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -60,7 +62,10 @@ class DailyExportController extends Controller
             ], 500);
         }
 
+        $exportDate = $log->export_date->toDateString();
         $log->delete();
+
+        AuditLog::record(Auth::id(), 'daily_export_deleted', 'DailyExportLog', null, "Deleted daily export for {$exportDate}");
 
         return response()->json(['message' => 'Export deleted!']);
     }
@@ -91,6 +96,8 @@ class DailyExportController extends Controller
         }
 
         $log = DailyExportLog::where('export_date', $date->toDateString())->first();
+
+        AuditLog::record(Auth::id(), 'daily_export_generated', 'DailyExportLog', $log?->id, "Generated daily export for {$date->toDateString()}");
 
         return response()->json([
             'message' => 'Export generated.',

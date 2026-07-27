@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\AuditLog;
 use App\Models\Product;
 use App\Models\StockLog;
 use Illuminate\Support\Facades\DB;
@@ -84,6 +85,8 @@ class InventoryController extends Controller
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
+
+        AuditLog::record($user->id, 'product_restocked', 'Product', $product->id, ($request->action === 'add' ? 'Added' : 'Removed') . " {$request->quantity} of \"{$product->name}\"");
 
         return response()->json(['message' => 'Stock updated!', 'product' => $product]);
     }

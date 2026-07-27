@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class CashierCashMovement extends Model
 {
     protected $fillable = [
-        'cashier_shift_id', 'user_id', 'type', 'amount_usd', 'amount_khr', 'reason',
+        'cashier_shift_id', 'user_id', 'type', 'amount_usd', 'amount_khr', 'reason', 'idempotency_key',
     ];
 
     protected $casts = [

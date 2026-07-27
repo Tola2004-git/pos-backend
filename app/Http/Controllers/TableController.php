@@ -3,9 +3,11 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use App\Events\TableChanged;
+use App\Models\AuditLog;
 use App\Models\Table;
 use App\Support\RealtimeBroadcaster;
 
@@ -41,12 +43,21 @@ class TableController extends Controller
             'capacity' => 'required|integer|min:1|max:50',
         ]);
 
-        $table = Table::create([
-            'name'     => $request->name,
-            'capacity' => $request->capacity,
-            'status'   => 'available',
-            'notes'    => $request->note ?? null,
-        ]);
+        try {
+            $table = Table::create([
+                'name'     => $request->name,
+                'capacity' => $request->capacity,
+                'status'   => 'available',
+                'notes'    => $request->note ?? null,
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            if ($e->getCode() === '23000') {
+                return response()->json(['message' => 'A table with this name already exists.'], 422);
+            }
+            throw $e;
+        }
+
+        AuditLog::record(Auth::id(), 'table_created', 'Table', $table->id, "Created table \"{$table->name}\"");
 
         RealtimeBroadcaster::send(new TableChanged($table->id, 'created'));
 
@@ -55,7 +66,7 @@ class TableController extends Controller
 
     public function update(Request $request, int $id)
     {
-        $table = Table::findOrFail($id);
+        $table = Table::with('currentOrder')->findOrFail($id);
 
         $request->validate([
             'name'     => ['required', 'string', Rule::unique('tables', 'name')->ignore($id)],
@@ -63,12 +74,32 @@ class TableController extends Controller
             'status'   => 'nullable|in:available,occupied,reserved',
         ]);
 
-        $table->update([
-            'name'     => $request->name,
-            'capacity' => $request->capacity,
-            'status'   => $request->status ?? $table->status,
-            'notes'    => $request->note ?? null,
-        ]);
+        // Same protection clear() already applies: overriding the status away
+        // from what a pending order expects (reserved/occupied) would orphan
+        // it - still in the system with this table_id and its stock already
+        // deducted, but with no table left to surface it on.
+        if ($request->filled('status') && $request->status !== $table->status
+            && $table->currentOrder && $table->currentOrder->status === 'pending') {
+            return response()->json([
+                'message' => 'This table has a pending order - complete or cancel it before changing its status.',
+            ], 422);
+        }
+
+        try {
+            $table->update([
+                'name'     => $request->name,
+                'capacity' => $request->capacity,
+                'status'   => $request->status ?? $table->status,
+                'notes'    => $request->note ?? null,
+            ]);
+        } catch (\Illuminate\Database\QueryException $e) {
+            if ($e->getCode() === '23000') {
+                return response()->json(['message' => 'A table with this name already exists.'], 422);
+            }
+            throw $e;
+        }
+
+        AuditLog::record(Auth::id(), 'table_updated', 'Table', $table->id, "Updated table \"{$table->name}\"");
 
         RealtimeBroadcaster::send(new TableChanged($table->id, 'updated'));
 
@@ -152,7 +183,10 @@ class TableController extends Controller
         }
 
         $tableId = $table->id;
+        $tableName = $table->name;
         $table->delete();
+
+        AuditLog::record(Auth::id(), 'table_deleted', 'Table', $tableId, "Deleted table \"{$tableName}\"");
 
         RealtimeBroadcaster::send(new TableChanged($tableId, 'deleted'));
 
