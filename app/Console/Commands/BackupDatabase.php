@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\BackupLog;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -22,12 +23,12 @@ class BackupDatabase extends Command
      *
      * @var string
      */
-    protected $description = 'Dump the database to a .sql file and store it on the local and Google Drive disks';
+    protected $description = 'Dump the database to an encrypted .sql.enc file and store it on the local and Google Drive disks';
 
     public function handle(): int
     {
         $timestamp = Carbon::now();
-        $fileName = 'backup-' . $timestamp->format('Y-m-d_His') . '.sql';
+        $fileName = 'backup-' . $timestamp->format('Y-m-d_His') . '.sql.enc';
         $relativePath = 'backups/' . $fileName;
         $userId = $this->option('user_id') ? (int) $this->option('user_id') : null;
 
@@ -40,13 +41,21 @@ class BackupDatabase extends Command
 
         $localDisk = Storage::disk('local');
         $absolutePath = $localDisk->path($relativePath);
+        // The dump is written as plaintext to a temp file first (writeDump()
+        // streams row batches, which the encrypter can't do), then encrypted
+        // into the real destination in one pass. The temp file never leaves
+        // the OS temp dir and is always removed below.
+        $tempPlainPath = tempnam(sys_get_temp_dir(), 'backup_plain_');
 
         try {
             if (! is_dir(dirname($absolutePath))) {
                 mkdir(dirname($absolutePath), 0755, true);
             }
 
-            $tablesCount = $this->writeDump($absolutePath, $timestamp);
+            $tablesCount = $this->writeDump($tempPlainPath, $timestamp);
+
+            $encrypted = Crypt::encryptString(file_get_contents($tempPlainPath));
+            file_put_contents($absolutePath, $encrypted);
 
             $sizeBytes = filesize($absolutePath);
             $disksStored = ['local'];
@@ -75,7 +84,7 @@ class BackupDatabase extends Command
                 'completed_at'  => now(),
             ]);
 
-            $this->info("Backup complete: {$fileName} ({$sizeBytes} bytes) stored on: " . implode(', ', $disksStored));
+            $this->info("Backup complete: {$fileName} ({$sizeBytes} bytes, encrypted) stored on: " . implode(', ', $disksStored));
 
             return self::SUCCESS;
         } catch (\Throwable $e) {
@@ -87,8 +96,20 @@ class BackupDatabase extends Command
             $this->error("Backup failed: {$e->getMessage()}");
 
             return self::FAILURE;
+        } finally {
+            if (file_exists($tempPlainPath)) {
+                @unlink($tempPlainPath);
+            }
         }
     }
+
+    // backup_logs tracks backup FILES that live independently on disk/Drive.
+    // If it were included in the dump, restoring an older backup would wipe
+    // its own row for the safety backup restore() just took - the file would
+    // still be on disk, but its DB record (and thus its "Restore" button in
+    // the UI) would vanish. Excluding it keeps that tracking table always
+    // reflecting what's actually on disk, independent of any restore.
+    private const EXCLUDED_TABLES = ['backup_logs'];
 
     private function writeDump(string $absolutePath, Carbon $timestamp): int
     {
@@ -105,6 +126,7 @@ class BackupDatabase extends Command
             fn ($row) => array_values((array) $row)[0],
             DB::select('SHOW TABLES')
         );
+        $tables = array_values(array_diff($tables, self::EXCLUDED_TABLES));
 
         foreach ($tables as $table) {
             $createRow = DB::select("SHOW CREATE TABLE `{$table}`")[0];

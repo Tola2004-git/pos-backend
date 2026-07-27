@@ -90,14 +90,19 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('/audit-logs', [AuditLogController::class, 'index']);
 
+        // Listing backups is a cheap read, so it stays outside the tight
+        // throttle below - otherwise just paginating the list could burn
+        // through the budget meant to guard the destructive actions.
+        Route::get('/backups', [BackupController::class, 'index']);
+
         // Backups can dump/restore the entire database - throttled tighter
         // than ordinary admin writes since each run is expensive and restore
         // is destructive.
         Route::middleware('throttle:5,1')->group(function () {
-            Route::get('/backups', [BackupController::class, 'index']);
             Route::post('/backups/generate', [BackupController::class, 'generate']);
             Route::get('/backups/{id}/download', [BackupController::class, 'download']);
             Route::post('/backups/{id}/restore', [BackupController::class, 'restore']);
+            Route::delete('/backups/{id}', [BackupController::class, 'destroy']);
         });
     });
 

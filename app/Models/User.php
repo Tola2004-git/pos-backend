@@ -14,6 +14,7 @@ class User extends Authenticatable implements JWTSubject
     protected $hidden = ['password'];
     protected $casts = [
         'profile_image' => 'string',
+        'is_owner'      => 'boolean',
     ];
 
     public function getJWTIdentifier()

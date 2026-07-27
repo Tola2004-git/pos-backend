@@ -10,6 +10,26 @@ use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
 {
+    private function passwordStrengthScore(string $password): int
+    {
+        $score = 0;
+        if (strlen($password) >= 8) $score++;
+        if (strlen($password) >= 12) $score++;
+        if (preg_match('/[A-Z]/', $password)) $score++;
+        if (preg_match('/[0-9]/', $password)) $score++;
+        if (preg_match('/[^A-Za-z0-9]/', $password)) $score++;
+        return $score;
+    }
+
+    private function passwordStrengthRule(): \Closure
+    {
+        return function ($attribute, $value, $fail) {
+            if ($this->passwordStrengthScore($value) < 3) {
+                $fail('Password is too weak. Use at least 8 characters with a mix of uppercase letters, numbers, or symbols.');
+            }
+        };
+    }
+
     public function index(Request $request)
     {
         $query = User::query();
@@ -31,11 +51,14 @@ class UserController extends Controller
 
     public function store(Request $request)
     {
+        $request->merge(['profile_image' => $request->profile_image ?: null]);
+
         $request->validate([
-            'name'     => 'required|string',
-            'email'    => 'required|email|unique:users,email',
-            'password' => 'required|min:6',
-            'role'     => 'required|in:cashier',
+            'name'          => 'required|string',
+            'email'         => 'required|email|unique:users,email',
+            'password'      => ['required', 'min:6', $this->passwordStrengthRule()],
+            'role'          => 'required|in:cashier',
+            'profile_image' => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
         ]);
 
         $user = User::create([
@@ -55,17 +78,33 @@ class UserController extends Controller
     {
         $user = User::findOrFail($id);
 
-        if ($user->role === 'admin' && Auth::id() != $user->id) {
+        if ($user->is_owner && Auth::id() != $user->id) {
             return response()->json([
-                'message' => "You are not allowed to modify another Admin's account.",
+                'message' => 'The owner account cannot be modified by another admin.',
             ], 403);
         }
 
+        $request->merge(['profile_image' => $request->profile_image ?: null]);
+
         $request->validate([
-            'name'  => 'required|string',
-            'email' => 'required|email|unique:users,email,' . $id,
-            'role'  => 'required|in:admin,cashier',
+            'name'          => 'required|string',
+            'email'         => 'required|email|unique:users,email,' . $id,
+            'role'          => 'required|in:admin,cashier',
+            'password'      => ['nullable', 'min:6', $this->passwordStrengthRule()],
+            'profile_image' => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
         ]);
+
+        if ($user->role === 'admin' && Auth::id() == $user->id && $request->role !== 'admin') {
+            return response()->json([
+                'message' => 'You cannot change your own admin role.',
+            ], 403);
+        }
+
+        if ($user->role === 'admin' && $request->role !== 'admin' && User::where('role', 'admin')->count() <= 1) {
+            return response()->json([
+                'message' => 'Cannot remove the last remaining admin.',
+            ], 403);
+        }
 
         $data = [
             'name'          => $request->name,
@@ -95,9 +134,15 @@ class UserController extends Controller
 
         $user = User::findOrFail($id);
 
-        if ($user->role === 'admin') {
+        if ($user->is_owner) {
             return response()->json([
-                'message' => "You are not allowed to modify another Admin's account.",
+                'message' => 'The owner account cannot be deleted.',
+            ], 403);
+        }
+
+        if ($user->role === 'admin' && User::where('role', 'admin')->count() <= 1) {
+            return response()->json([
+                'message' => 'Cannot delete the last remaining admin.',
             ], 403);
         }
 
