@@ -111,7 +111,14 @@ class InventoryController extends Controller
             });
         }
 
-        $logs = $query->latest()->paginate($request->per_page ?? 15);
+        // An edited order writes its cancel_restore + re-sale pair in the
+        // same request, so they share an identical created_at down to the
+        // second - latest() alone has no tiebreaker for that tie, so the
+        // pair's display order isn't guaranteed and can show the restore as
+        // if it happened after the sale that actually followed it. id is
+        // monotonically increasing with insertion order, so it always
+        // resolves ties correctly.
+        $logs = $query->latest()->orderByDesc('id')->paginate($request->per_page ?? 15);
         return response()->json($logs);
     }
 }

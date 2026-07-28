@@ -83,7 +83,11 @@ class IngredientInventoryController extends Controller
             });
         }
 
-        $logs = $query->latest()->paginate($request->per_page ?? 15);
+        // See InventoryController::history() for why id is needed as a
+        // tiebreaker: an edited order's cancel_restore + re-sale pair share
+        // an identical created_at, and latest() alone doesn't guarantee
+        // their relative order.
+        $logs = $query->latest()->orderByDesc('id')->paginate($request->per_page ?? 15);
         return response()->json($logs);
     }
 }
