@@ -10,6 +10,7 @@ use App\Http\Controllers\IngredientController;
 use App\Http\Controllers\IngredientInventoryController;
 use App\Http\Controllers\PaymentMethodController;
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\OrderReportController;
 use App\Http\Controllers\TableController;
 use App\Http\Controllers\PromotionController;
 use App\Http\Controllers\DailyExportController;
@@ -81,7 +82,7 @@ Route::middleware('auth:api')->group(function () {
         Route::put('/orders/{id}/refund', [OrderController::class, 'refund']);
 
         // Profit/COGS/margin exposes supplier cost data - admin only, not cashiers.
-        Route::get('/orders/profit-summary', [OrderController::class, 'profitSummary']);
+        Route::get('/orders/profit-summary', [OrderReportController::class, 'profitSummary']);
 
         Route::get('/expenses', [ExpenseController::class, 'index']);
         Route::post('/expenses', [ExpenseController::class, 'store']);
@@ -119,10 +120,10 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('/orders', [OrderController::class, 'index']);
         Route::get('/orders/latest', [OrderController::class, 'latest']);
-        Route::get('/orders/sales-by-cashier', [OrderController::class, 'salesByCashier']);
-        Route::get('/orders/sales-summary', [OrderController::class, 'salesSummary']);
-        Route::get('/orders/top-products', [OrderController::class, 'topProducts']);
-        Route::get('/orders/category-sales', [OrderController::class, 'categorySales']);
+        Route::get('/orders/sales-by-cashier', [OrderReportController::class, 'salesByCashier']);
+        Route::get('/orders/sales-summary', [OrderReportController::class, 'salesSummary']);
+        Route::get('/orders/top-products', [OrderReportController::class, 'topProducts']);
+        Route::get('/orders/category-sales', [OrderReportController::class, 'categorySales']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
         Route::post('/orders', [OrderController::class, 'store']);
         Route::put('/orders/{id}', [OrderController::class, 'update']);
