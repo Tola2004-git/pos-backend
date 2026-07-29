@@ -21,6 +21,7 @@ use App\Http\Controllers\AuditLogController;
 use GuzzleHttp\Psr7\Response;
 
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');
+Route::post('/refresh', [AuthController::class, 'refresh'])->middleware('throttle:30,1');
 
 Route::middleware('auth:api')->group(function () {
     // Available to any authenticated user, regardless of role.

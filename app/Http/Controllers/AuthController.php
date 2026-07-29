@@ -26,6 +26,27 @@ class AuthController extends Controller
         ]);
     }
 
+    // Called automatically by the frontend's axios response interceptor the
+    // moment an API call comes back 401 for an expired (but not yet past
+    // refresh_ttl) token - trades a short-lived access token (harder to
+    // abuse if leaked) for the UX of a long-lived one, without needing to
+    // just extend JWT_TTL and accept a stolen token staying valid for hours.
+    // Deliberately outside the auth:api group: that guard rejects an expired
+    // token outright, but refreshing one expired-but-still-in-window is
+    // exactly the point of this endpoint.
+    public function refresh()
+    {
+        try {
+            $newToken = JWTAuth::parseToken()->refresh();
+        } catch (\Tymon\JWTAuth\Exceptions\TokenExpiredException $e) {
+            return response()->json(['message' => 'Session expired. Please log in again.'], 401);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Could not refresh session.'], 401);
+        }
+
+        return response()->json(['token' => $newToken]);
+    }
+
     public function logout()
     {
         $user = JWTAuth::user();

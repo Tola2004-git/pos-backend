@@ -167,7 +167,7 @@ class OrderController extends Controller
             default:
                 $currentFrom = $now->copy()->startOfDay();
                 $previousFrom = $now->copy()->subDay()->startOfDay();
-                $previousTo = $now->copy()->subDay()->endOfDay();
+                $previousTo = $previousFrom->copy()->addSeconds($currentFrom->diffInSeconds($now));
                 $trendFrom = $now->copy()->subDays(6)->startOfDay();
                 $groupExpr = $this->dateGroupExpr('day');
                 break;

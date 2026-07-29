@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'api/*',
         ]);
         $middleware->append(\Illuminate\Http\Middleware\HandleCors::class);
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
 
         $middleware->alias([
             'role' => \App\Http\Middleware\RoleMiddleware::class,

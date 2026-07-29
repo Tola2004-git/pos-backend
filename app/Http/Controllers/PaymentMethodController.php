@@ -43,12 +43,14 @@ class PaymentMethodController extends Controller
 
         // The seeded Cash method is the sole source of truth for is_cash-
         // based cash-shift accounting (CashierShiftController sums by the
-        // is_cash flag, not by name) - renaming it away from "Cash" wouldn't
-        // break that accounting, but it would confuse cashiers looking at
-        // the payment picker, so keep its name locked from the admin UI.
-        if ($method->is_cash && $data['name'] !== $method->name) {
+        // is_cash flag, not by name) - any edit here, not just a rename,
+        // risks breaking that accounting (e.g. clearing is_cash would make
+        // every cash sale stop counting as cash) or confusing cashiers
+        // looking at the payment picker. Locked from the admin UI entirely -
+        // it isn't even listed there (see Payments.jsx's is_cash filter).
+        if ($method->is_cash) {
             return response()->json([
-                'message' => 'The Cash payment method cannot be renamed.',
+                'message' => 'The Cash payment method cannot be edited.',
             ], 422);
         }
 

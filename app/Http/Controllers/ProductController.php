@@ -77,6 +77,7 @@ class ProductController extends Controller
             'price'       => 'required|numeric|min:0',
             'sku'         => 'nullable|string|unique:products,sku',
             'barcode'     => 'nullable|string|unique:products,barcode',
+            'image'       => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
         ]);
 
         $product = Product::create([
@@ -107,6 +108,7 @@ class ProductController extends Controller
             'price'       => 'required|numeric|min:0',
             'sku'         => 'nullable|string|unique:products,sku,' . $id,
             'barcode'     => 'nullable|string|unique:products,barcode,' . $id,
+            'image'       => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
         ]);
 
         $product->update([
