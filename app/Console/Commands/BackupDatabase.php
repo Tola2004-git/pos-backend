@@ -11,18 +11,8 @@ use Illuminate\Support\Facades\Storage;
 
 class BackupDatabase extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'app:backup-database {--user_id= : ID of the admin who triggered this manually}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Dump the database to an encrypted .sql.enc file and store it on the local and Google Drive disks';
 
     public function handle(): int

@@ -11,7 +11,6 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class InventoryController extends Controller
 {
-    // List products with stock filter
     public function index(Request $request)
     {
         $threshold = $request->threshold ?? 10;
@@ -42,7 +41,6 @@ class InventoryController extends Controller
         return response()->json($products);
     }
 
-    // Restock (add or remove)
     public function restock(Request $request)
     {
         $request->validate([
@@ -91,7 +89,6 @@ class InventoryController extends Controller
         return response()->json(['message' => 'Stock updated!', 'product' => $product]);
     }
 
-    // Stock History
     public function history(Request $request)
     {
 

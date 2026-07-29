@@ -11,7 +11,6 @@ use Tymon\JWTAuth\Facades\JWTAuth;
 
 class IngredientInventoryController extends Controller
 {
-    // Restock (add or remove)
     public function restock(Request $request)
     {
         $request->validate([
@@ -64,7 +63,6 @@ class IngredientInventoryController extends Controller
         return response()->json(['message' => 'Stock updated!', 'ingredient' => $ingredient]);
     }
 
-    // Stock History
     public function history(Request $request)
     {
         $query = IngredientStockLog::with(['ingredient:id,name,unit', 'user:id,name']);

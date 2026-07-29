@@ -11,23 +11,10 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ExportDailyReceipts extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'app:export-daily-receipts {date? : Date to export (Y-m-d), defaults to today}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Export the day\'s receipts/orders into a formatted Excel file';
 
-    /**
-     * Execute the console command.
-     */
     public function handle(): int
     {
         $date = $this->argument('date')
