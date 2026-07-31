@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\AuditLog;
 use App\Models\User;
+use App\Rules\ValidBase64Image;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 
@@ -58,7 +59,7 @@ class UserController extends Controller
             'email'         => 'required|email|unique:users,email',
             'password'      => ['required', 'min:6', $this->passwordStrengthRule()],
             'role'          => 'required|in:cashier',
-            'profile_image' => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
+            'profile_image' => ['nullable', 'string', 'max:1000000', new ValidBase64Image()],
         ]);
 
         $user = User::create([
@@ -91,7 +92,7 @@ class UserController extends Controller
             'email'         => 'required|email|unique:users,email,' . $id,
             'role'          => 'required|in:admin,cashier',
             'password'      => ['nullable', 'min:6', $this->passwordStrengthRule()],
-            'profile_image' => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
+            'profile_image' => ['nullable', 'string', 'max:1000000', new ValidBase64Image()],
         ]);
 
         if ($user->role === 'admin' && Auth::id() == $user->id && $request->role !== 'admin') {

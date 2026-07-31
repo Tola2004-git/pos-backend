@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\AuditLog;
 use App\Models\Product;
 use App\Models\Setting;
+use App\Rules\ValidBase64Image;
 use Illuminate\Support\Facades\Auth;
 
 class ProductController extends Controller
@@ -77,7 +78,7 @@ class ProductController extends Controller
             'price'       => 'required|numeric|min:0',
             'sku'         => 'nullable|string|unique:products,sku',
             'barcode'     => 'nullable|string|unique:products,barcode',
-            'image'       => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
+            'image'       => ['nullable', 'string', 'max:1000000', new ValidBase64Image()],
         ]);
 
         $product = Product::create([
@@ -108,7 +109,7 @@ class ProductController extends Controller
             'price'       => 'required|numeric|min:0',
             'sku'         => 'nullable|string|unique:products,sku,' . $id,
             'barcode'     => 'nullable|string|unique:products,barcode,' . $id,
-            'image'       => ['nullable', 'string', 'max:1000000', 'regex:/^data:image\/(png|jpe?g|gif|webp);base64,/'],
+            'image'       => ['nullable', 'string', 'max:1000000', new ValidBase64Image()],
         ]);
 
         $product->update([
