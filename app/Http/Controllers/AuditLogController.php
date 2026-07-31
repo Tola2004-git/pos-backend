@@ -25,4 +25,28 @@ class AuditLogController extends Controller
 
         return response()->json($query->paginate($request->per_page ?? 20));
     }
+
+    // Powers the Dashboard's security banner - a quick "should I go look at
+    // the audit log?" signal without admins needing to remember to check it.
+    public function securitySummary()
+    {
+        $windowHours = 1;
+        $since = now()->subHours($windowHours);
+
+        $failedLoginCount = AuditLog::where('action', 'login_failed')
+            ->where('created_at', '>=', $since)
+            ->count();
+
+        $recentFailedLogins = AuditLog::where('action', 'login_failed')
+            ->where('created_at', '>=', $since)
+            ->latest()
+            ->limit(5)
+            ->get(['description', 'created_at']);
+
+        return response()->json([
+            'window_hours' => $windowHours,
+            'failed_login_count' => $failedLoginCount,
+            'recent_failed_logins' => $recentFailedLogins,
+        ]);
+    }
 }

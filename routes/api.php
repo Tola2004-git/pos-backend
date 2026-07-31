@@ -91,6 +91,7 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/expenses/summary', [ExpenseController::class, 'summary']);
 
         Route::get('/audit-logs', [AuditLogController::class, 'index']);
+        Route::get('/audit-logs/security-summary', [AuditLogController::class, 'securitySummary']);
 
         // Listing backups is a cheap read, so it stays outside the tight
         // throttle below - otherwise just paginating the list could burn
