@@ -2,26 +2,18 @@
 
 namespace App\Http\Controllers;
 
-use App\Mail\SuspiciousLoginAlert;
 use App\Models\AuditLog;
-use App\Models\User;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Mail;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
 class AuthController extends Controller
 {
-    private const SUSPICIOUS_LOGIN_THRESHOLD = 5;
-    private const SUSPICIOUS_LOGIN_WINDOW_HOURS = 1;
-
     public function login(Request $request)
     {
         $credentials = $request->only('email', 'password');
 
         if (!$token = JWTAuth::attempt($credentials)) {
             AuditLog::record(null, 'login_failed', 'User', null, "Failed login attempt for \"{$credentials['email']}\"");
-            $this->maybeNotifyAdminsOfSuspiciousLogins();
             return response()->json(['message' => 'Invalid email or password!'], 401);
         }
 
@@ -69,31 +61,5 @@ class AuthController extends Controller
     public function me()
     {
         return response()->json(JWTAuth::user());
-    }
-
-    // Cache-gated so a sustained attack sends one email per window instead
-    // of one per failed attempt - without this, a real brute-force run would
-    // flood every admin's inbox instead of just telling them once.
-    private function maybeNotifyAdminsOfSuspiciousLogins(): void
-    {
-        $failedLoginCount = AuditLog::where('action', 'login_failed')
-            ->where('created_at', '>=', now()->subHours(self::SUSPICIOUS_LOGIN_WINDOW_HOURS))
-            ->count();
-
-        if ($failedLoginCount < self::SUSPICIOUS_LOGIN_THRESHOLD) {
-            return;
-        }
-
-        if (! Cache::add('suspicious_login_alert_sent', true, now()->addHours(self::SUSPICIOUS_LOGIN_WINDOW_HOURS))) {
-            return;
-        }
-
-        $adminEmails = User::where('role', 'admin')->pluck('email');
-
-        try {
-            Mail::to($adminEmails)->send(new SuspiciousLoginAlert($failedLoginCount, self::SUSPICIOUS_LOGIN_WINDOW_HOURS));
-        } catch (\Throwable $e) {
-            report($e);
-        }
     }
 }
