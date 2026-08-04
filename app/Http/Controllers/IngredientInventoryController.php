@@ -14,10 +14,11 @@ class IngredientInventoryController extends Controller
     public function restock(Request $request)
     {
         $request->validate([
-            'ingredient_id' => 'required|exists:bakery_ingredients,id',
-            'action'        => 'required|in:add,remove',
-            'quantity'      => 'required|numeric|min:0.01',
-            'expiry_date'   => 'nullable|date',
+            'ingredient_id'  => 'required|exists:bakery_ingredients,id',
+            'action'         => 'required|in:add,remove',
+            'quantity'       => 'required|numeric|min:0.01',
+            'cost_per_unit'  => 'nullable|numeric|min:0',
+            'expiry_date'    => 'nullable|date',
         ]);
 
         $user = JWTAuth::parseToken()->authenticate();
@@ -31,6 +32,13 @@ class IngredientInventoryController extends Controller
                     $ingredient->quantity += $request->quantity;
                     if ($request->filled('expiry_date')) {
                         $ingredient->expiry_date = $request->expiry_date;
+                    }
+                    // Restocking is when the admin actually knows the fresh
+                    // purchase price - let it update cost_per_unit here too
+                    // instead of requiring a separate Edit Ingredient trip.
+                    // Optional: omitting it (null) leaves the old cost as-is.
+                    if ($request->filled('cost_per_unit')) {
+                        $ingredient->cost_per_unit = $request->cost_per_unit;
                     }
                 } else {
                     if ($ingredient->quantity < $request->quantity) {
