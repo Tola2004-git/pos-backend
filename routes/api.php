@@ -72,8 +72,8 @@ Route::middleware('auth:api')->group(function () {
 
         Route::get('/daily-exports', [DailyExportController::class, 'index']);
         Route::post('/daily-exports/generate', [DailyExportController::class, 'generate']);
-        Route::get('/daily-exports/{date}/download', [DailyExportController::class, 'download']);
-        Route::delete('/daily-exports/{date}', [DailyExportController::class, 'destroy']);
+        Route::get('/daily-exports/{id}/download', [DailyExportController::class, 'download']);
+        Route::delete('/daily-exports/{id}', [DailyExportController::class, 'destroy']);
 
         Route::put('/settings/low-stock-threshold', [SettingController::class, 'updateLowStockThreshold']);
         Route::put('/exchange-rates', [SettingController::class, 'updateExchangeRate']);

@@ -11,29 +11,41 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class ExportDailyReceipts extends Command
 {
-    protected $signature = 'app:export-daily-receipts {date? : Date to export (Y-m-d), defaults to today}';
+    protected $signature = 'app:export-daily-receipts {date? : Start date to export (Y-m-d), defaults to today} {date_to? : End date to export (Y-m-d), defaults to the start date}';
 
     protected $description = 'Export the day\'s receipts/orders into a formatted Excel file';
 
     public function handle(): int
     {
-        $date = $this->argument('date')
+        $dateFrom = $this->argument('date')
             ? Carbon::parse($this->argument('date'))
             : Carbon::today();
+        $dateTo = $this->argument('date_to')
+            ? Carbon::parse($this->argument('date_to'))
+            : $dateFrom->copy();
+        $dateFrom->startOfDay();
+        $dateTo->endOfDay();
 
         $ordersQuery = Order::query()
-            ->whereDate('created_at', $date)
+            ->whereBetween('created_at', [$dateFrom, $dateTo])
             ->where('status', 'completed');
         $ordersCount = $ordersQuery->count();
         $totalAmount = (clone $ordersQuery)->sum('total');
 
-        $fileName = "receipts-{$date->format('Y-m-d')}.xlsx";
+        $dateLabel = $dateFrom->isSameDay($dateTo)
+            ? $dateFrom->format('Y-m-d')
+            : $dateFrom->format('Y-m-d') . '-to-' . $dateTo->format('Y-m-d');
+        $fileName = "receipts-{$dateLabel}.xlsx";
 
-        Excel::store(new DailyReceiptsExport($date), $fileName, 'google');
+        Excel::store(new DailyReceiptsExport($dateFrom, $dateTo), $fileName, 'google');
 
         DailyExportLog::updateOrCreate(
-            ['export_date' => $date->toDateString()],
             [
+                'date_from' => $dateFrom->toDateString(),
+                'date_to' => $dateTo->toDateString(),
+            ],
+            [
+                'export_date' => $dateFrom->toDateString(),
                 'file_path'    => $fileName,
                 'orders_count' => $ordersCount,
                 'total_amount' => $totalAmount,
@@ -41,7 +53,7 @@ class ExportDailyReceipts extends Command
             ]
         );
 
-        $this->info("Exported {$ordersCount} order(s) for {$date->toDateString()} to Google Drive as {$fileName}");
+        $this->info("Exported {$ordersCount} order(s) from {$dateFrom->toDateString()} to {$dateTo->toDateString()} to Google Drive as {$fileName}");
 
         return self::SUCCESS;
     }

@@ -32,14 +32,17 @@ class DailyReceiptsExport implements
 {
     private const LAST_COLUMN = 'M';
 
-    public function __construct(private readonly Carbon $date)
+    public function __construct(
+        private readonly Carbon $dateFrom,
+        private readonly Carbon $dateTo,
+    )
     {
     }
 
     public function query(): Builder
     {
         return Order::query()
-            ->whereDate('created_at', $this->date)
+            ->whereBetween('created_at', [$this->dateFrom, $this->dateTo])
             ->where('status', 'completed')
             ->with(['items', 'paymentMethod'])
             ->orderBy('created_at');
@@ -89,7 +92,9 @@ class DailyReceiptsExport implements
 
     public function title(): string
     {
-        return $this->date->format('Y-m-d');
+        return $this->dateFrom->isSameDay($this->dateTo)
+            ? $this->dateFrom->format('Y-m-d')
+            : $this->dateFrom->format('Y-m-d') . ' to ' . $this->dateTo->format('Y-m-d');
     }
 
     public function columnFormats(): array

@@ -16,15 +16,16 @@ class DailyExportController extends Controller
     public function index(Request $request)
     {
         $logs = DailyExportLog::query()
-            ->orderByDesc('export_date')
+            ->orderByDesc('date_from')
+            ->orderByDesc('id')
             ->paginate($request->per_page ?? 15);
 
         return response()->json($logs);
     }
 
-    public function download(string $date)
+    public function download(int $id)
     {
-        $log = DailyExportLog::where('export_date', Carbon::parse($date)->toDateString())->first();
+        $log = DailyExportLog::find($id);
 
         /** @var \Illuminate\Filesystem\FilesystemAdapter $disk */
         $disk = Storage::disk('google');
@@ -36,9 +37,9 @@ class DailyExportController extends Controller
         return $disk->download($log->file_path, basename($log->file_path));
     }
 
-    public function destroy(string $date)
+    public function destroy(int $id)
     {
-        $log = DailyExportLog::where('export_date', Carbon::parse($date)->toDateString())->first();
+        $log = DailyExportLog::find($id);
 
         if (!$log) {
             return response()->json(['message' => 'No export found for this date.'], 404);
@@ -53,7 +54,7 @@ class DailyExportController extends Controller
             }
         } catch (\Throwable $e) {
             Log::error('Daily export file deletion failed', [
-                'date'  => $log->export_date->toDateString(),
+                'id'    => $log->id,
                 'error' => $e->getMessage(),
             ]);
 
@@ -62,31 +63,42 @@ class DailyExportController extends Controller
             ], 500);
         }
 
-        $exportDate = $log->export_date->toDateString();
+        $exportRange = $log->date_from->toDateString() . ' to ' . $log->date_to->toDateString();
         $log->delete();
 
-        AuditLog::record(Auth::id(), 'daily_export_deleted', 'DailyExportLog', null, "Deleted daily export for {$exportDate}");
+        AuditLog::record(Auth::id(), 'daily_export_deleted', 'DailyExportLog', null, "Deleted export for {$exportRange}");
 
         return response()->json(['message' => 'Export deleted!']);
     }
 
     public function generate(Request $request)
     {
-        $request->validate([
-            'date' => 'nullable|date',
+        $validated = $request->validate([
+            'date' => ['nullable', 'date_format:Y-m-d'],
+            'date_from' => ['required_with:date_to', 'nullable', 'date_format:Y-m-d'],
+            'date_to' => ['required_with:date_from', 'nullable', 'date_format:Y-m-d', 'after_or_equal:date_from'],
         ]);
+        $defaultDate = $validated['date'] ?? Carbon::today()->toDateString();
+        $dateFrom = Carbon::parse($validated['date_from'] ?? $defaultDate)->startOfDay();
+        $dateTo = Carbon::parse($validated['date_to'] ?? $validated['date_from'] ?? $defaultDate)->endOfDay();
 
-        $date = $request->date ? Carbon::parse($request->date) : Carbon::today();
+        if ($dateFrom->diffInDays($dateTo) + 1 > 366) {
+            return response()->json(['message' => 'The selected date range cannot exceed 366 days.'], 422);
+        }
 
         // The export command uploads to Google Drive (config/filesystems.php
         // 'google' disk) - if those credentials are missing, expired, or
         // revoked, the upload throws and would otherwise surface as a raw
         // 500 with no indication of what actually went wrong.
         try {
-            Artisan::call('app:export-daily-receipts', ['date' => $date->toDateString()]);
+            Artisan::call('app:export-daily-receipts', [
+                'date' => $dateFrom->toDateString(),
+                'date_to' => $dateTo->toDateString(),
+            ]);
         } catch (\Throwable $e) {
             Log::error('Daily export generation failed', [
-                'date'  => $date->toDateString(),
+                'date_from' => $dateFrom->toDateString(),
+                'date_to' => $dateTo->toDateString(),
                 'error' => $e->getMessage(),
             ]);
 
@@ -95,9 +107,11 @@ class DailyExportController extends Controller
             ], 500);
         }
 
-        $log = DailyExportLog::where('export_date', $date->toDateString())->first();
+        $log = DailyExportLog::whereDate('date_from', $dateFrom->toDateString())
+            ->whereDate('date_to', $dateTo->toDateString())
+            ->first();
 
-        AuditLog::record(Auth::id(), 'daily_export_generated', 'DailyExportLog', $log?->id, "Generated daily export for {$date->toDateString()}");
+        AuditLog::record(Auth::id(), 'daily_export_generated', 'DailyExportLog', $log?->id, "Generated export from {$dateFrom->toDateString()} to {$dateTo->toDateString()}");
 
         return response()->json([
             'message' => 'Export generated.',
