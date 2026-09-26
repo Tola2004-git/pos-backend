@@ -78,13 +78,19 @@ class InventoryController extends Controller
                     'note'       => $request->note ?? null,
                 ]);
 
+                AuditLog::record(
+                    $user->id,
+                    'product_restocked',
+                    'Product',
+                    $product->id,
+                    ($request->action === 'add' ? 'Added' : 'Removed') . " {$request->quantity} of \"{$product->name}\""
+                );
+
                 return $product;
             });
         } catch (\RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
-
-        AuditLog::record($user->id, 'product_restocked', 'Product', $product->id, ($request->action === 'add' ? 'Added' : 'Removed') . " {$request->quantity} of \"{$product->name}\"");
 
         return response()->json(['message' => 'Stock updated!', 'product' => $product]);
     }

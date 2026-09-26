@@ -51,10 +51,6 @@ Route::middleware('auth:api')->group(function () {
         Route::put('/tables/{id}', [TableController::class, 'update']);
         Route::delete('/tables/{id}', [TableController::class, 'destroy']);
 
-        Route::get('/inventory', [InventoryController::class, 'index']);
-        Route::post('/inventory/restock', [InventoryController::class, 'restock']);
-        Route::get('/inventory/history', [InventoryController::class, 'history']);
-
         Route::get('/ingredients', [IngredientController::class, 'index']);
         Route::post('/ingredients', [IngredientController::class, 'store']);
         Route::put('/ingredients/{id}', [IngredientController::class, 'update']);
@@ -83,6 +79,11 @@ Route::middleware('auth:api')->group(function () {
 
         // Profit/COGS/margin exposes supplier cost data - admin only, not cashiers.
         Route::get('/orders/profit-summary', [OrderReportController::class, 'profitSummary']);
+        Route::get('/orders/sales-by-cashier', [OrderReportController::class, 'salesByCashier']);
+        Route::get('/orders/sales-summary', [OrderReportController::class, 'salesSummary']);
+        Route::get('/orders/top-products', [OrderReportController::class, 'topProducts']);
+        Route::get('/orders/category-sales', [OrderReportController::class, 'categorySales']);
+        Route::get('/inventory/history', [InventoryController::class, 'history']);
 
         Route::get('/expenses', [ExpenseController::class, 'index']);
         Route::post('/expenses', [ExpenseController::class, 'store']);
@@ -109,8 +110,8 @@ Route::middleware('auth:api')->group(function () {
         });
     });
 
-    // Shared: admin + cashier. Orders/tables (POS operation) and read-only
-    // catalog data cashiers need to populate the POS menu.
+    // Shared: admin + cashier. Inventory adjustments are available to both
+    // roles, while catalog management and threshold settings remain admin-only.
     Route::middleware('role:admin,cashier')->group(function () {
         Route::get('/categories', [CategoryController::class, 'index']);
         Route::get('/products', [ProductController::class, 'index']);
@@ -118,13 +119,11 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/payment-methods', [PaymentMethodController::class, 'index']);
         Route::get('/promotions', [PromotionController::class, 'index']);
         Route::get('/settings/low-stock-threshold', [SettingController::class, 'getLowStockThreshold']);
+        Route::get('/inventory', [InventoryController::class, 'index']);
+        Route::post('/inventory/restock', [InventoryController::class, 'restock']);
 
         Route::get('/orders', [OrderController::class, 'index']);
         Route::get('/orders/latest', [OrderController::class, 'latest']);
-        Route::get('/orders/sales-by-cashier', [OrderReportController::class, 'salesByCashier']);
-        Route::get('/orders/sales-summary', [OrderReportController::class, 'salesSummary']);
-        Route::get('/orders/top-products', [OrderReportController::class, 'topProducts']);
-        Route::get('/orders/category-sales', [OrderReportController::class, 'categorySales']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
         Route::post('/orders', [OrderController::class, 'store']);
         Route::put('/orders/{id}', [OrderController::class, 'update']);

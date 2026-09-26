@@ -119,6 +119,18 @@ class CashierShiftController extends Controller
                 'status'           => 'open',
             ]);
 
+            AuditLog::record(
+                $user->id,
+                'shift_opened',
+                'CashierShift',
+                $shift->id,
+                sprintf(
+                    'Opened shift with opening cash: $%s / %s KHR',
+                    number_format((float) $shift->opening_cash_usd, 2, '.', ''),
+                    number_format((float) $shift->opening_cash_khr, 0, '.', ',')
+                )
+            );
+
             RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'opened'));
 
             return response()->json(['shift' => $shift]);
@@ -176,17 +188,35 @@ class CashierShiftController extends Controller
         $expectedUsd = (float) $shift->opening_cash_usd + (float) $cashTotals->total_usd + (float) $movementTotals->net_usd;
         $expectedKhr = (float) $shift->opening_cash_khr + (float) $cashTotals->total_khr + (float) $movementTotals->net_khr;
 
-        $shift->update([
-            'closed_at'         => $closedAt,
-            'expected_cash_usd' => $expectedUsd,
-            'expected_cash_khr' => $expectedKhr,
-            'counted_cash_usd'  => $request->counted_cash_usd,
-            'counted_cash_khr'  => $request->counted_cash_khr ?? 0,
-            'variance_usd'      => $request->counted_cash_usd - $expectedUsd,
-            'variance_khr'      => ($request->counted_cash_khr ?? 0) - $expectedKhr,
-            'note'              => $request->note,
-            'status'            => 'pending_review',
-        ]);
+        DB::transaction(function () use ($shift, $user, $request, $closedAt, $expectedUsd, $expectedKhr) {
+            $shift->update([
+                'closed_at'         => $closedAt,
+                'expected_cash_usd' => $expectedUsd,
+                'expected_cash_khr' => $expectedKhr,
+                'counted_cash_usd'  => $request->counted_cash_usd,
+                'counted_cash_khr'  => $request->counted_cash_khr ?? 0,
+                'variance_usd'      => $request->counted_cash_usd - $expectedUsd,
+                'variance_khr'      => ($request->counted_cash_khr ?? 0) - $expectedKhr,
+                'note'              => $request->note,
+                'status'            => 'pending_review',
+            ]);
+
+            AuditLog::record(
+                $user->id,
+                'shift_closed',
+                'CashierShift',
+                $shift->id,
+                sprintf(
+                    'Closed shift. Expected: $%s / %s KHR; counted: $%s / %s KHR; variance: $%s / %s KHR',
+                    number_format($expectedUsd, 2, '.', ''),
+                    number_format($expectedKhr, 0, '.', ','),
+                    number_format((float) $shift->counted_cash_usd, 2, '.', ''),
+                    number_format((float) $shift->counted_cash_khr, 0, '.', ','),
+                    number_format((float) $shift->variance_usd, 2, '.', ''),
+                    number_format((float) $shift->variance_khr, 0, '.', ',')
+                )
+            );
+        });
 
         RealtimeBroadcaster::send(new ShiftChanged($shift->id, 'closed'));
 
