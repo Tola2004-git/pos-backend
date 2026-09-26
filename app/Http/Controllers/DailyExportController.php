@@ -16,7 +16,7 @@ class DailyExportController extends Controller
     public function index(Request $request)
     {
         $logs = DailyExportLog::query()
-            ->orderByDesc('date_from')
+            ->orderByDesc('generated_at')
             ->orderByDesc('id')
             ->paginate($request->per_page ?? 15);
 
