@@ -131,6 +131,8 @@ class ExpenseController extends Controller
         $now = now();
 
         if ($request->date_from && $request->date_to) {
+            $fromDate = null;
+            $toDate = null;
             try {
                 $fromDate = Carbon::parse($request->date_from)->startOfDay();
                 $toDate = Carbon::parse($request->date_to)->startOfDay();
@@ -139,8 +141,8 @@ class ExpenseController extends Controller
             }
 
             if ($fromDate && $fromDate->lte($toDate)) {
-                // Mirrors OrderController::MAX_CUSTOM_RANGE_DAYS so a stray
-                // multi-year range can't be requested from either endpoint.
+                // Keep custom expense summaries within the same one-year
+                // range supported by order reports.
                 if ($fromDate->diffInDays($toDate) + 1 > OrderController::MAX_CUSTOM_RANGE_DAYS) {
                     $fromDate = $toDate->copy()->subDays(OrderController::MAX_CUSTOM_RANGE_DAYS - 1);
                 }

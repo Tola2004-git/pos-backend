@@ -79,7 +79,6 @@ Route::middleware('auth:api')->group(function () {
 
         // Profit/COGS/margin exposes supplier cost data - admin only, not cashiers.
         Route::get('/orders/profit-summary', [OrderReportController::class, 'profitSummary']);
-        Route::get('/orders/sales-by-cashier', [OrderReportController::class, 'salesByCashier']);
         Route::get('/orders/sales-summary', [OrderReportController::class, 'salesSummary']);
         Route::get('/orders/top-products', [OrderReportController::class, 'topProducts']);
         Route::get('/orders/category-sales', [OrderReportController::class, 'categorySales']);
@@ -122,6 +121,8 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/inventory', [InventoryController::class, 'index']);
         Route::post('/inventory/restock', [InventoryController::class, 'restock']);
 
+        // This endpoint scopes cashier requests to their own sales.
+        Route::get('/orders/sales-by-cashier', [OrderReportController::class, 'salesByCashier']);
         Route::get('/orders', [OrderController::class, 'index']);
         Route::get('/orders/latest', [OrderController::class, 'latest']);
         Route::get('/orders/{id}', [OrderController::class, 'show']);
