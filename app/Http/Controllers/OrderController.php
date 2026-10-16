@@ -124,9 +124,11 @@ class OrderController extends Controller
 
         $subtotal = 0;
         $orderItems = [];
+        $categoryByProduct = [];
 
         foreach ($request->items as $item) {
             $product = Product::findOrFail($item['product_id']);
+            $categoryByProduct[$product->id] = $product->category_id;
             $itemSubtotal = $product->price * $item['quantity'];
             $subtotal += $itemSubtotal;
             $orderItems[] = [
@@ -138,8 +140,6 @@ class OrderController extends Controller
             ];
         }
 
-        $discount = 0;
-        $promotion = null;
         $tax = (float) ($request->tax ?? 0);
         // subtotal/total are recomputed from product prices and promotions
         // below - never taken from the request. Trusting a client-submitted
@@ -148,62 +148,9 @@ class OrderController extends Controller
         // customer still pays full price at the register.
         $subtotal = round($subtotal, 2);
 
-        $activePromotions = Promotion::with(['products', 'categories'])
-            ->where('status', true)
-            ->where(function ($query) {
-                $today = now()->toDateString();
-                $query->whereNull('start_date')
-                    ->orWhere('start_date', '<=', $today);
-                $query->whereNull('end_date')
-                    ->orWhere('end_date', '>=', $today);
-            })
-            ->get();
+        ['discount' => $discount, 'promotion_id' => $promotionId] =
+            $this->calculatePromotionDiscount($orderItems, $categoryByProduct, $subtotal);
 
-        if ($request->promotion_id) {
-            $promotion = $activePromotions->firstWhere('id', $request->promotion_id);
-        }
-
-        $promotionsToApply = $promotion ? collect([$promotion]) : $activePromotions;
-
-        foreach ($promotionsToApply as $promo) {
-            if ($promo->min_purchase && $subtotal < $promo->min_purchase) {
-                continue;
-            }
-
-            if ($promo->apply_to === 'all') {
-                if ($promo->type === 'percentage') {
-                    $discount += ($subtotal * $promo->value) / 100;
-                } else {
-                    $discount += $promo->value;
-                }
-                continue;
-            }
-
-            foreach ($orderItems as $item) {
-                $matches = false;
-
-                if ($promo->apply_to === 'product') {
-                    $matches = $promo->products->contains('id', $item['product_id']);
-                }
-
-                if ($promo->apply_to === 'category') {
-                    $product = Product::find($item['product_id']);
-                    $matches = $product && $promo->categories->contains('id', $product->category_id);
-                }
-
-                if (! $matches) {
-                    continue;
-                }
-
-                if ($promo->type === 'percentage') {
-                    $discount += ($item['subtotal'] * $promo->value) / 100;
-                } else {
-                    $discount += $promo->value * $item['quantity'];
-                }
-            }
-        }
-
-        $discount = round((float) $discount, 2);
         $tax = round($tax, 2);
         $total = max(0, round($subtotal - $discount + $tax, 2));
 
@@ -217,7 +164,7 @@ class OrderController extends Controller
         $change = $newStatus === 'completed' ? round($amountPaid - $total, 2) : 0;
 
         try {
-            DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $tax, $total, $change) {
+            DB::transaction(function () use ($order, $orderItems, $request, $user, $subtotal, $discount, $promotionId, $tax, $total, $change) {
                 foreach ($order->items as $existingItem) {
                     if (! $existingItem->product_id) {
                         continue;
@@ -264,7 +211,7 @@ class OrderController extends Controller
                     'tax'               => $tax,
                     'total'             => $total,
                     'change_amount'     => $change,
-                    'promotion_id'      => $request->promotion_id ?? $order->promotion_id,
+                    'promotion_id'      => $promotionId,
                     'note'              => $request->note ?? $order->note,
                 ]);
 
@@ -370,9 +317,11 @@ class OrderController extends Controller
 
         $subtotal = 0;
         $orderItems = [];
+        $categoryByProduct = [];
 
         foreach ($request->items as $item) {
             $product = Product::findOrFail($item['product_id']);
+            $categoryByProduct[$product->id] = $product->category_id;
 
             if ($product->qty < $item['quantity']) {
                 return response()->json([
@@ -392,66 +341,9 @@ class OrderController extends Controller
             ];
         }
 
-        $discount = 0;
-        $promotion = null;
-
-        $activePromotions = Promotion::with(['products', 'categories'])
-            ->where('status', true)
-            ->where(function ($query) {
-                $today = now()->toDateString();
-                $query->whereNull('start_date')
-                    ->orWhere('start_date', '<=', $today);
-                $query->whereNull('end_date')
-                    ->orWhere('end_date', '>=', $today);
-            })
-            ->get();
-
-        if ($request->promotion_id) {
-            $promotion = $activePromotions->firstWhere('id', $request->promotion_id);
-        }
-
-        $promotionsToApply = $promotion ? collect([$promotion]) : $activePromotions;
-
-        foreach ($promotionsToApply as $promo) {
-            if ($promo->min_purchase && $subtotal < $promo->min_purchase) {
-                continue;
-            }
-
-            if ($promo->apply_to === 'all') {
-                if ($promo->type === 'percentage') {
-                    $discount += ($subtotal * $promo->value) / 100;
-                } else {
-                    $discount += $promo->value;
-                }
-                continue;
-            }
-
-            foreach ($orderItems as $item) {
-                $matches = false;
-
-                if ($promo->apply_to === 'product') {
-                    $matches = $promo->products->contains('id', $item['product_id']);
-                }
-
-                if ($promo->apply_to === 'category') {
-                    $product = Product::find($item['product_id']);
-                    $matches = $product && $promo->categories->contains('id', $product->category_id);
-                }
-
-                if (! $matches) {
-                    continue;
-                }
-
-                if ($promo->type === 'percentage') {
-                    $discount += ($item['subtotal'] * $promo->value) / 100;
-                } else {
-                    $discount += $promo->value * $item['quantity'];
-                }
-            }
-        }
-
         $subtotal = round($subtotal, 2);
-        $discount = round((float) $discount, 2);
+        ['discount' => $discount, 'promotion_id' => $promotionId] =
+            $this->calculatePromotionDiscount($orderItems, $categoryByProduct, $subtotal);
         $tax   = round((float) ($request->tax ?? 0), 2);
         $total = max(0, round($subtotal - $discount + $tax, 2));
         $status = $request->status ?? 'completed';
@@ -487,7 +379,7 @@ class OrderController extends Controller
         for ($attempts = 0; $attempts < 5; $attempts++) {
             $orderNumber = 'ORD-' . strtoupper(uniqid('', true));
             try {
-                $order = DB::transaction(function () use ($request, $user, $orderItems, $subtotal, $discount, $tax, $total, $change, $status, $orderNumber, $idempotencyKey) {
+                $order = DB::transaction(function () use ($request, $user, $orderItems, $subtotal, $discount, $promotionId, $tax, $total, $change, $status, $orderNumber, $idempotencyKey) {
                     $order = Order::create([
                         'order_number'      => $orderNumber,
                         'idempotency_key'   => $idempotencyKey,
@@ -500,7 +392,7 @@ class OrderController extends Controller
                         'tax'               => $tax,
                         'total'             => $total,
                         'payment_method_id' => $request->payment_method_id,
-                        'promotion_id'      => $request->promotion_id,
+                        'promotion_id'      => $promotionId,
                         'amount_paid'       => $request->amount_paid,
                         'amount_paid_usd'   => $request->amount_paid_usd ?? 0,
                         'amount_paid_khr'   => $request->amount_paid_khr ?? 0,
@@ -825,6 +717,87 @@ class OrderController extends Controller
             ->latest()
             ->first();
         return response()->json(['order' => $order]);
+    }
+
+    /**
+     * Each line item gets at most ONE promotion - whichever saves the
+     * customer the most - instead of every matching promotion stacking
+     * (three 15%/10%/5% promos on one product used to add up to 30% off).
+     * An "all"-scoped fixed-amount promo discounts the order as a whole, so
+     * it competes against the per-item total rather than adding to it.
+     * Any promotion_id the client sends is ignored: the server alone picks
+     * the promotion, so a crafted request can't choose a bigger discount.
+     * usePromotionLogic.js / utils/promotionCalc.js mirror this exactly.
+     *
+     * @return array{discount: float, promotion_id: ?int}
+     */
+    private function calculatePromotionDiscount(array $orderItems, array $categoryByProduct, float $subtotal): array
+    {
+        $today = now()->toDateString();
+
+        $promotions = Promotion::with(['products', 'categories'])
+            ->where('status', true)
+            ->where(fn ($q) => $q->whereNull('start_date')->orWhere('start_date', '<=', $today))
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $today))
+            ->orderBy('id')
+            ->get()
+            ->filter(fn ($promo) => ! $promo->min_purchase || $subtotal >= (float) $promo->min_purchase);
+
+        $itemDiscountTotal = 0.0;
+        $savingsByPromotion = [];
+
+        foreach ($orderItems as $item) {
+            $best = 0.0;
+            $bestId = null;
+
+            foreach ($promotions as $promo) {
+                $matches = match ($promo->apply_to) {
+                    'all'      => $promo->type === 'percentage',
+                    'product'  => $promo->products->contains('id', $item['product_id']),
+                    'category' => ($categoryByProduct[$item['product_id']] ?? null) !== null
+                        && $promo->categories->contains('id', $categoryByProduct[$item['product_id']]),
+                    default    => false,
+                };
+
+                if (! $matches) {
+                    continue;
+                }
+
+                $amount = $promo->type === 'percentage'
+                    ? $item['subtotal'] * (float) $promo->value / 100
+                    : (float) $promo->value * $item['quantity'];
+                $amount = min($amount, (float) $item['subtotal']);
+
+                if ($amount > $best) {
+                    $best = $amount;
+                    $bestId = $promo->id;
+                }
+            }
+
+            if ($bestId !== null) {
+                $itemDiscountTotal += $best;
+                $savingsByPromotion[$bestId] = ($savingsByPromotion[$bestId] ?? 0) + $best;
+            }
+        }
+
+        $orderPromo = $promotions
+            ->filter(fn ($promo) => $promo->apply_to === 'all' && $promo->type !== 'percentage')
+            ->sortByDesc(fn ($promo) => (float) $promo->value)
+            ->first();
+        $orderPromoAmount = $orderPromo ? min((float) $orderPromo->value, $subtotal) : 0.0;
+
+        if ($orderPromoAmount > $itemDiscountTotal) {
+            return ['discount' => round($orderPromoAmount, 2), 'promotion_id' => $orderPromo->id];
+        }
+
+        // orders.promotion_id holds one promotion, so record the one that
+        // saved the most across the order.
+        arsort($savingsByPromotion);
+
+        return [
+            'discount'     => round($itemDiscountTotal, 2),
+            'promotion_id' => array_key_first($savingsByPromotion),
+        ];
     }
 
     private function adjustIngredientStock(int $productId, float $quantitySold, string $action, int $userId, string $note): void
